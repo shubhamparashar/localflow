@@ -22,8 +22,19 @@ private final class HUDContentView: NSVisualEffectView {
     var onClick: (() -> Void)?
     var onHoverChange: ((Bool) -> Void)?
     var menuProvider: (() -> NSMenu?)?
+    /// Fires with the pill's new center (screen coords) once a drag settles.
+    var onDragEnded: ((CGPoint) -> Void)?
+    /// Fires true when a drag begins and false when it ends, so the HUD can stop
+    /// repositioning the pill (e.g. on an idle→recording change) mid-drag.
+    var onDragStateChanged: ((Bool) -> Void)?
 
     private var trackingAreaRef: NSTrackingArea?
+
+    /// Movement (points) below which a press-and-release is a click, not a drag.
+    private static let dragThreshold: CGFloat = 4
+    private var mouseDownScreen: NSPoint?
+    private var windowCenterAtMouseDown: NSPoint?
+    private var isDragging = false
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
@@ -51,7 +62,55 @@ private final class HUDContentView: NSVisualEffectView {
     override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
     override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
 
+    override func mouseDown(with event: NSEvent) {
+        mouseDownScreen = NSEvent.mouseLocation
+        if let window = window {
+            windowCenterAtMouseDown = NSPoint(x: window.frame.midX, y: window.frame.midY)
+        }
+        isDragging = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = mouseDownScreen,
+              let startCenter = windowCenterAtMouseDown,
+              let window = window else { return }
+        let now = NSEvent.mouseLocation
+        let dx = now.x - start.x
+        let dy = now.y - start.y
+        if !isDragging && hypot(dx, dy) < Self.dragThreshold { return }
+        if !isDragging {
+            isDragging = true
+            onDragStateChanged?(true)
+        }
+        // Track the center (not the origin) so a width change mid-drag — e.g. a
+        // dictation starting — can't slide the pill out from under the cursor.
+        let center = NSPoint(x: startCenter.x + dx, y: startCenter.y + dy)
+        window.setFrameOrigin(NSPoint(
+            x: center.x - window.frame.width / 2,
+            y: center.y - window.frame.height / 2
+        ))
+    }
+
     override func mouseUp(with event: NSEvent) {
+        defer {
+            mouseDownScreen = nil
+            windowCenterAtMouseDown = nil
+            isDragging = false
+        }
+        // If the panel was ordered out mid-gesture (a state change hid it), the
+        // release is neither a move nor a click — drop it without persisting a
+        // position or toggling dictation.
+        guard window?.isVisible == true else {
+            if isDragging { onDragStateChanged?(false) }
+            return
+        }
+        if isDragging {
+            onDragStateChanged?(false)
+            if let window = window {
+                onDragEnded?(CGPoint(x: window.frame.midX, y: window.frame.midY))
+            }
+            return
+        }
         let local = convert(event.locationInWindow, from: nil)
         if bounds.contains(local) { onClick?() }
     }
@@ -122,6 +181,9 @@ final class OverlayHUD: NSObject {
     /// Bumped on every show/hide so a stale fade-out completion doesn't
     /// orderOut a panel that has since been re-shown.
     private var hideGeneration: Int = 0
+    /// True while the user is physically dragging the pill; suppresses automatic
+    /// repositioning so a state change can't yank it away from the cursor.
+    private var isDraggingPill = false
 
     // MARK: - Public API
 
@@ -157,12 +219,14 @@ final class OverlayHUD: NSObject {
         applyState(state, continuingRecording: continuingRecording)
         layoutContent()
         if panel.isVisible {
-            repositionOnCurrentScreen()
+            positionPanel(initial: false)
             panel.alphaValue = 1
+            logShown(state)
             return
         }
-        positionOnCursorScreen()
+        positionPanel(initial: true)
         animateIn()
+        logShown(state)
     }
 
     private func hideOnMain() {
@@ -171,6 +235,9 @@ final class OverlayHUD: NSObject {
         currentState = nil
         isHovering = false
         warningActive = false
+        // Clear any drag flag stranded by a gesture interrupted while hiding, so
+        // the next show can reposition normally.
+        isDraggingPill = false
         guard let panel: NSPanel = panel, panel.isVisible else { return }
         hideGeneration += 1
         let generation: Int = hideGeneration
@@ -233,6 +300,8 @@ final class OverlayHUD: NSObject {
         effect.onClick = { [weak self] in self?.onToggle?() }
         effect.onHoverChange = { [weak self] hovering in self?.hoverChanged(hovering) }
         effect.menuProvider = { [weak self] in self?.buildContextMenu() }
+        effect.onDragEnded = { [weak self] center in self?.handleDragEnded(center) }
+        effect.onDragStateChanged = { [weak self] dragging in self?.isDraggingPill = dragging }
 
         iconView = NSImageView(frame: .zero)
         iconView.imageScaling = .scaleProportionallyUpOrDown
@@ -284,6 +353,16 @@ final class OverlayHUD: NSObject {
 
     private func buildContextMenu() -> NSMenu {
         let menu: NSMenu = NSMenu()
+        if Config.hudHasCustomPosition {
+            let resetItem: NSMenuItem = NSMenuItem(
+                title: "Reset Flow-Bar Position",
+                action: #selector(menuResetPosition),
+                keyEquivalent: ""
+            )
+            resetItem.target = self
+            menu.addItem(resetItem)
+            menu.addItem(.separator())
+        }
         let hideItem: NSMenuItem = NSMenuItem(
             title: "Hide Flow-Bar for 1 hour",
             action: #selector(menuHideForOneHour),
@@ -304,6 +383,7 @@ final class OverlayHUD: NSObject {
 
     @objc private func menuHideForOneHour() { onHideForOneHour?() }
     @objc private func menuQuit() { onQuit?() }
+    @objc private func menuResetPosition() { resetPosition() }
 
     // MARK: - Hover
 
@@ -407,7 +487,7 @@ final class OverlayHUD: NSObject {
     private func relayout() {
         guard let panel: NSPanel = panel, panel.isVisible else { return }
         layoutContent()
-        repositionOnCurrentScreen()
+        positionPanel(initial: false)
     }
 
     private func layoutContent() {
@@ -428,8 +508,14 @@ final class OverlayHUD: NSObject {
         width += Self.horizontalPadding
         width = max(width, idleCollapsed ? Self.minIdleWidth : Self.minPillWidth)
 
+        // Resize about the pill's center so a width change (idle↔recording or
+        // hover-expand) grows symmetrically instead of from the bottom-left
+        // corner — this keeps a dragged pill under the cursor even if it resizes
+        // mid-gesture, and centers the growth for everyone else.
+        let center: NSPoint = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
         var panelFrame: NSRect = panel.frame
         panelFrame.size = NSSize(width: width, height: Self.pillHeight)
+        panelFrame.origin = NSPoint(x: center.x - width / 2, y: center.y - Self.pillHeight / 2)
         panel.setFrame(panelFrame, display: false)
 
         let midY: CGFloat = Self.pillHeight / 2
@@ -485,18 +571,24 @@ final class OverlayHUD: NSObject {
 
     // MARK: - Positioning
 
-    private func positionOnCursorScreen() {
-        let mouse: NSPoint = NSEvent.mouseLocation
-        let cursorScreen: NSScreen? = NSScreen.screens.first { (screen: NSScreen) -> Bool in
-            NSMouseInRect(mouse, screen.frame, false)
+    /// Restores the user's dragged position when one is saved; otherwise snaps
+    /// to bottom-center of the cursor's screen (first show) or the pill's
+    /// current screen (subsequent relayouts).
+    private func positionPanel(initial: Bool) {
+        guard !isDraggingPill else { return }
+        if Config.hudHasCustomPosition {
+            setCenter(clampOnScreen(Config.hudCenter))
+            return
         }
-        guard let target: NSScreen = cursorScreen ?? NSScreen.main ?? NSScreen.screens.first else { return }
-        setOrigin(bottomCenteredOn: target)
+        let target: NSScreen? = initial ? cursorScreen() : (panel.screen ?? NSScreen.main)
+        guard let screen: NSScreen = target else { return }
+        setOrigin(bottomCenteredOn: screen)
     }
 
-    private func repositionOnCurrentScreen() {
-        guard let target: NSScreen = panel.screen ?? NSScreen.main else { return }
-        setOrigin(bottomCenteredOn: target)
+    private func cursorScreen() -> NSScreen? {
+        let mouse: NSPoint = NSEvent.mouseLocation
+        let hit: NSScreen? = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+        return hit ?? NSScreen.main ?? NSScreen.screens.first
     }
 
     private func setOrigin(bottomCenteredOn screen: NSScreen) {
@@ -506,6 +598,79 @@ final class OverlayHUD: NSObject {
             y: screenFrame.minY + Self.bottomMargin
         )
         panel.setFrameOrigin(origin)
+    }
+
+    private func setCenter(_ center: CGPoint) {
+        let origin: NSPoint = NSPoint(
+            x: center.x - panel.frame.width / 2,
+            y: center.y - panel.frame.height / 2
+        )
+        panel.setFrameOrigin(origin)
+    }
+
+    /// Keeps a saved center inside some screen's visible area so a position
+    /// saved on a now-disconnected display (or nudged past an edge) can't
+    /// strand the pill off-screen. Prefers the screen containing the point,
+    /// else the nearest one.
+    private func clampOnScreen(_ center: CGPoint) -> CGPoint {
+        let screens: [NSScreen] = NSScreen.screens
+        guard !screens.isEmpty else { return center }
+        let host: NSScreen? = screens.first { NSMouseInRect(center, $0.frame, false) }
+            ?? screens.min { squaredDistance(from: center, to: $0.frame) < squaredDistance(from: center, to: $1.frame) }
+            ?? NSScreen.main
+        guard let frame: NSRect = host?.visibleFrame else { return center }
+        let halfW: CGFloat = panel.frame.width / 2
+        let halfH: CGFloat = panel.frame.height / 2
+        let x: CGFloat = min(max(center.x, frame.minX + halfW), frame.maxX - halfW)
+        let y: CGFloat = min(max(center.y, frame.minY + halfH), frame.maxY - halfH)
+        return CGPoint(x: x, y: y)
+    }
+
+    private func squaredDistance(from point: CGPoint, to rect: NSRect) -> CGFloat {
+        let nx: CGFloat = min(max(point.x, rect.minX), rect.maxX)
+        let ny: CGFloat = min(max(point.y, rect.minY), rect.maxY)
+        return (point.x - nx) * (point.x - nx) + (point.y - ny) * (point.y - ny)
+    }
+
+    // MARK: - Drag persistence
+
+    private func handleDragEnded(_ center: CGPoint) {
+        Config.hudHasCustomPosition = true
+        Config.hudCenter = center
+        Log.info("Flow-Bar moved to (\(Int(center.x)), \(Int(center.y)))")
+    }
+
+    /// Clears the saved position and snaps the pill back to bottom-center.
+    func resetPosition() {
+        performOnMain {
+            Config.hudHasCustomPosition = false
+            guard let panel: NSPanel = self.panel, panel.isVisible else { return }
+            self.positionPanel(initial: false)
+            Log.info("Flow-Bar position reset to default")
+        }
+    }
+
+    private func logShown(_ state: HUDState) {
+        // Only the resting/active states carry a meaningful position; the
+        // transcribing/cleaning frames are transient and same-place, so skip
+        // them to keep one-or-two lines per dictation rather than a burst.
+        switch state {
+        case .transcribing, .cleaning:
+            return
+        case .idle, .recording:
+            break
+        }
+        let f: NSRect = panel.frame
+        Log.info("Flow-Bar \(stateLabel(state)) frame=(\(Int(f.origin.x)),\(Int(f.origin.y)) \(Int(f.width))x\(Int(f.height))) visible=\(panel.isVisible) custom=\(Config.hudHasCustomPosition)")
+    }
+
+    private func stateLabel(_ state: HUDState) -> String {
+        switch state {
+        case .idle: return "idle"
+        case .recording: return "recording"
+        case .transcribing: return "transcribing"
+        case .cleaning: return "cleaning"
+        }
     }
 
     // MARK: - Animation

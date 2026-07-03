@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hud = OverlayHUD()
     private lazy var scratchpad = ScratchpadController()
     private let settings = SettingsController()
+    private lazy var onboarding = OnboardingController()
 
     private enum State {
         case startingServer
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         setupStatusItem()
         ensurePermissions()
+        maybeShowOnboarding()
         OllamaCleaner.warmUp()
 
         ModelDownloader.shared.onStatusChange = { [weak self] in
@@ -441,6 +443,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        let welcomeItem = NSMenuItem(
+            title: "Setup Guide…",
+            action: #selector(showOnboarding),
+            keyEquivalent: ""
+        )
+        welcomeItem.target = self
+        menu.addItem(welcomeItem)
         menu.addItem(.separator())
 
         let pasteLast = NSMenuItem(
@@ -756,6 +766,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showSettings() {
         settings.show()
+    }
+
+    private func maybeShowOnboarding() {
+        guard !Config.hasCompletedOnboarding else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.onboarding.show()
+        }
+    }
+
+    @objc private func showOnboarding() {
+        onboarding.show()
     }
 
     @objc private func openLogs() {

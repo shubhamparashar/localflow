@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 enum HotkeyChoice: String, CaseIterable {
@@ -95,6 +96,32 @@ enum Config {
     static var hudHiddenUntil: Date {
         get { Date(timeIntervalSince1970: defaults.double(forKey: "hudHiddenUntil")) }
         set { defaults.set(newValue.timeIntervalSince1970, forKey: "hudHiddenUntil") }
+    }
+
+    /// Set once the user drags the Flow-Bar pill. While true, the pill restores
+    /// to `hudCenter` on every show (and across relaunches) instead of snapping
+    /// to bottom-center. Clearing it returns the pill to the default position.
+    static var hudHasCustomPosition: Bool {
+        get { defaults.bool(forKey: "hudHasCustomPosition") }
+        set { defaults.set(newValue, forKey: "hudHasCustomPosition") }
+    }
+
+    /// The user-chosen pill center, in global screen coordinates. Stored as the
+    /// center (not the origin) so the pill stays put when it grows/shrinks
+    /// between idle and recording. Only meaningful when `hudHasCustomPosition`.
+    static var hudCenter: CGPoint {
+        get { CGPoint(x: defaults.double(forKey: "hudCenterX"), y: defaults.double(forKey: "hudCenterY")) }
+        set {
+            defaults.set(newValue.x, forKey: "hudCenterX")
+            defaults.set(newValue.y, forKey: "hudCenterY")
+        }
+    }
+
+    /// Set once the user finishes (or dismisses) the first-run welcome, so the
+    /// onboarding window appears only on the very first launch.
+    static var hasCompletedOnboarding: Bool {
+        get { defaults.bool(forKey: "hasCompletedOnboarding") }
+        set { defaults.set(newValue, forKey: "hasCompletedOnboarding") }
     }
 
     static var vadModelPath: String {
