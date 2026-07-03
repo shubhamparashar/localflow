@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let server = WhisperServerManager()
     private let hud = OverlayHUD()
     private lazy var scratchpad = ScratchpadController()
+    private let settings = SettingsController()
 
     private enum State {
         case startingServer
@@ -78,6 +79,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.onToggle = { [weak self] in self?.toggleDictationFromHUD() }
         hud.onHideForOneHour = { [weak self] in self?.hideHUDForOneHour() }
         hud.onQuit = { NSApp.terminate(nil) }
+        settings.onChanged = { [weak self] in
+            self?.rebuildMenu()
+            self?.refreshIdleHUD()
+        }
+        settings.onCleanupEnabled = { enabled in
+            if enabled { OllamaCleaner.warmUp() }
+        }
+        settings.onLanguageChanged = { [weak self] code in
+            guard code == "en", !ParakeetTranscriber.shared.isReady else { return }
+            ParakeetTranscriber.shared.prepare { ready in
+                Log.info("Parakeet engine ready: \(ready)")
+                self?.rebuildMenu()
+            }
+        }
+        settings.onLoginItemChanged = { [weak self] enabled in
+            self?.setLoginItem(enabled)
+        }
         hotkey.onPress = { [weak self] in self?.hotkeyPressed() }
         hotkey.onRelease = { [weak self] in self?.hotkeyReleased() }
         hotkey.onCommandPress = { [weak self] in self?.commandPressed() }
@@ -416,6 +434,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusLine)
         menu.addItem(.separator())
 
+        let settingsItem = NSMenuItem(
+            title: "Settings…",
+            action: #selector(showSettings),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        menu.addItem(.separator())
+
         let pasteLast = NSMenuItem(
             title: "Paste Last Transcript",
             action: #selector(pasteLastTranscript),
@@ -711,16 +738,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleLoginItem() {
+        setLoginItem(SMAppService.mainApp.status != .enabled)
+    }
+
+    private func setLoginItem(_ enabled: Bool) {
         do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
+            if enabled {
                 try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
             }
         } catch {
             Log.error("Login item toggle failed: \(error.localizedDescription)")
         }
         rebuildMenu()
+    }
+
+    @objc private func showSettings() {
+        settings.show()
     }
 
     @objc private func openLogs() {
