@@ -84,17 +84,16 @@ enum VoiceProfileStore {
 
     // MARK: - Report
 
+    private static let reportWindow = HTMLReportWindow(
+        title: "LocalFlow Voice Profile",
+        size: NSSize(width: 820, height: 720)
+    )
+
     static func present() {
         let records: [DictationRecord] = queue.sync { loadRecords() }
         let stats: VoiceProfileStats = computeStats(records)
         let html: String = renderHTML(stats)
-        do {
-            try html.write(to: reportFile, atomically: true, encoding: .utf8)
-        } catch {
-            Log.error("VoiceProfile: failed to write report: \(error)")
-            return
-        }
-        NSWorkspace.shared.open(reportFile)
+        reportWindow.show(html: html)
     }
 
     // MARK: - JSONL encode/decode

@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let injector = TextInjector()
     private let server = WhisperServerManager()
     private let hud = OverlayHUD()
+    private lazy var scratchpad = ScratchpadController()
 
     private enum State {
         case startingServer
@@ -74,6 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recorder.onLevel = { [weak self] dbfs in
             self?.hud.updateLevel(dbfs)
         }
+        hud.onToggle = { [weak self] in self?.toggleDictationFromHUD() }
+        hud.onHideForOneHour = { [weak self] in self?.hideHUDForOneHour() }
+        hud.onQuit = { NSApp.terminate(nil) }
         hotkey.onPress = { [weak self] in self?.hotkeyPressed() }
         hotkey.onRelease = { [weak self] in self?.hotkeyReleased() }
         hotkey.onCommandPress = { [weak self] in self?.commandPressed() }
@@ -151,6 +155,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try recorder.start()
             state = .recording
+            if Config.playStartSound {
+                NSSound(named: "Tink")?.play()
+            }
         } catch {
             Log.error("Failed to start recording: \(error.localizedDescription)")
         }
@@ -224,7 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         Log.info("Cleanup context: \(profile.category)")
                     }
                     OllamaCleaner.clean(text, profile: profile) { cleaned in
-                        if self.state != .recording { self.hud.hide() }
+                        if self.state != .recording { self.refreshIdleHUD() }
                         var final = cleaned
                         if profile?.stripTrailingPeriod == true,
                            final.hasSuffix("."),
@@ -356,10 +363,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.hud.show(.recording(handsFree: self.handsFreeArmed))
             case .transcribing:
                 self.hud.show(.transcribing)
-            default:
+            case .idle:
+                self.refreshIdleHUD()
+            case .startingServer, .serverFailed:
                 self.hud.hide()
             }
         }
+    }
+
+    /// Shows the always-on idle Flow-Bar when enabled and not snoozed; hides
+    /// it otherwise. Only meaningful while idle — recording/transcribing drive
+    /// their own HUD state.
+    private func refreshIdleHUD() {
+        guard state == .idle else { return }
+        let snoozed = Date() < Config.hudHiddenUntil
+        if Config.showIdleHUD && !snoozed {
+            hud.show(.idle)
+        } else {
+            hud.hide()
+        }
+    }
+
+    private func toggleDictationFromHUD() {
+        if state == .recording {
+            endDictation()
+        } else {
+            startHandsFreeDictation()
+        }
+    }
+
+    private func hideHUDForOneHour() {
+        Config.hudHiddenUntil = Date().addingTimeInterval(60 * 60)
+        hud.hide()
+        Log.info("Flow-Bar hidden for 1 hour")
     }
 
     private func rebuildMenu() {
@@ -397,6 +433,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pasteRaw.target = self
             menu.addItem(pasteRaw)
         }
+
+        let improve = NSMenuItem(
+            title: "Improve Selected Text",
+            action: #selector(improveSelectedText),
+            keyEquivalent: ""
+        )
+        improve.target = self
+        menu.addItem(improve)
+
+        let scratchpadItem = NSMenuItem(
+            title: "Scratchpad…",
+            action: #selector(showScratchpad),
+            keyEquivalent: ""
+        )
+        scratchpadItem.target = self
+        menu.addItem(scratchpadItem)
         menu.addItem(.separator())
 
         let cleanup = NSMenuItem(
@@ -502,6 +554,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         handsFree.state = Config.handsFreeEnabled ? .on : .off
         menu.addItem(handsFree)
 
+        let showHUD = NSMenuItem(
+            title: "Show Flow-Bar",
+            action: #selector(toggleShowHUD),
+            keyEquivalent: ""
+        )
+        showHUD.target = self
+        showHUD.state = Config.showIdleHUD ? .on : .off
+        menu.addItem(showHUD)
+
+        let startSound = NSMenuItem(
+            title: "Start Sound",
+            action: #selector(toggleStartSound),
+            keyEquivalent: ""
+        )
+        startSound.target = self
+        startSound.state = Config.playStartSound ? .on : .off
+        menu.addItem(startSound)
+
         let loginItem = NSMenuItem(
             title: "Start at Login",
             action: #selector(toggleLoginItem),
@@ -572,12 +642,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    @objc private func toggleShowHUD() {
+        Config.showIdleHUD.toggle()
+        if Config.showIdleHUD {
+            Config.hudHiddenUntil = Date(timeIntervalSince1970: 0)
+        }
+        refreshIdleHUD()
+        rebuildMenu()
+    }
+
+    @objc private func toggleStartSound() {
+        Config.playStartSound.toggle()
+        rebuildMenu()
+    }
+
     @objc private func showVoiceProfile() {
         VoiceProfileStore.present()
     }
 
     @objc private func showHistory() {
         HistoryView.present()
+    }
+
+    @objc private func showScratchpad() {
+        scratchpad.show()
+    }
+
+    /// Rewrites the current selection in the focused app (grammar/clarity)
+    /// without a spoken instruction — command mode with a fixed prompt.
+    @objc private func improveSelectedText() {
+        guard state == .idle else {
+            Log.info("Improve: busy, ignoring")
+            return
+        }
+        injector.captureSelection { [weak self] selection in
+            guard let self else { return }
+            guard let selection, !selection.isEmpty else {
+                Log.info("Improve: no selection captured")
+                return
+            }
+            OllamaCleaner.applyCommand(
+                instruction: OllamaCleaner.improveInstruction,
+                to: selection
+            ) { [weak self] result in
+                switch result {
+                case .success(let improved) where !improved.isEmpty:
+                    self?.injector.inject(improved)
+                case .success:
+                    Log.error("Improve: empty result, leaving selection untouched")
+                case .failure(let error):
+                    Log.error("Improve failed (is Ollama running?): \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     @objc private func selectLanguage(_ sender: NSMenuItem) {

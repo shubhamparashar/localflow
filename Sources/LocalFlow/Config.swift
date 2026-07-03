@@ -44,6 +44,13 @@ enum Config {
         defaults.string(forKey: "ollamaModel") ?? "llama3.2:3b"
     }
 
+    /// How long Ollama keeps the cleanup model resident after a request.
+    /// Well above the model default so dictations spread across a working
+    /// session skip the multi-second cold reload on the next take.
+    static var ollamaKeepAlive: String {
+        defaults.string(forKey: "ollamaKeepAlive") ?? "2h"
+    }
+
     static var ollamaPort: Int {
         let port = defaults.integer(forKey: "ollamaPort")
         return port == 0 ? 11434 : port
@@ -67,6 +74,27 @@ enum Config {
     static var smartSpacing: Bool {
         get { defaults.object(forKey: "smartSpacing") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "smartSpacing") }
+    }
+
+    /// Keeps the Flow-Bar pill on screen while idle (click to dictate). When
+    /// off, the pill only appears during recording/transcribing.
+    static var showIdleHUD: Bool {
+        get { defaults.object(forKey: "showIdleHUD") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "showIdleHUD") }
+    }
+
+    /// Plays a short sound the moment recording starts.
+    static var playStartSound: Bool {
+        get { defaults.object(forKey: "playStartSound") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "playStartSound") }
+    }
+
+    /// While `Date()` is before this, the idle Flow-Bar stays hidden (the
+    /// "Hide for 1 hour" action); recording feedback still shows. Unset reads
+    /// as the epoch, i.e. always in the past → visible.
+    static var hudHiddenUntil: Date {
+        get { Date(timeIntervalSince1970: defaults.double(forKey: "hudHiddenUntil")) }
+        set { defaults.set(newValue.timeIntervalSince1970, forKey: "hudHiddenUntil") }
     }
 
     static var vadModelPath: String {

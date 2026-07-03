@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 
 enum HUDState {
+    case idle
     case recording(handsFree: Bool)
     case transcribing
     case cleaning
@@ -14,15 +15,65 @@ private final class FocuslessPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Floating recording-indicator pill (Wispr Flow style): shown bottom-center
-/// of the screen the cursor is on, on all Spaces, above full-screen apps.
-/// All public methods are safe to call from any thread.
-final class OverlayHUD {
+/// Treats the whole pill as one control: every click, the context menu, and
+/// hover tracking route here rather than to the icon/label subviews, so the
+/// pill behaves like a single button regardless of where it's clicked.
+private final class HUDContentView: NSVisualEffectView {
+    var onClick: (() -> Void)?
+    var onHoverChange: ((Bool) -> Void)?
+    var menuProvider: (() -> NSMenu?)?
+
+    private var trackingAreaRef: NSTrackingArea?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        return bounds.contains(local) ? self : nil
+    }
+
+    // The panel never activates the app, so its first click must still register.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingAreaRef {
+            removeTrackingArea(trackingAreaRef)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingAreaRef = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
+    override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
+
+    override func mouseUp(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        if bounds.contains(local) { onClick?() }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        menuProvider?()
+    }
+}
+
+/// Floating Flow-Bar pill (Wispr Flow style): always visible when idle,
+/// expanding to show recording / transcribing / cleaning state. Sits
+/// bottom-center of the screen the cursor is on, on all Spaces, above
+/// full-screen apps, and never steals keyboard focus. Left-click toggles
+/// dictation; right-click offers Hide / Quit. All public methods are safe to
+/// call from any thread.
+final class OverlayHUD: NSObject {
 
     // MARK: - Layout constants
 
     private static let pillHeight: CGFloat = 48
     private static let minPillWidth: CGFloat = 200
+    private static let minIdleWidth: CGFloat = 52
     private static let cornerRadius: CGFloat = 24
     private static let bottomMargin: CGFloat = 80
     private static let horizontalPadding: CGFloat = 16
@@ -40,9 +91,22 @@ final class OverlayHUD {
     private static let minDBFS: Float = -50
     private static let maxDBFS: Float = -18
 
+    /// Below this level for `deadMicTimeout` seconds while recording, the mic
+    /// is almost certainly delivering nothing (unplugged, muted, or gain at
+    /// zero). Speech reliably clears it, so it won't fire on normal pauses.
+    private static let deadMicFloorDBFS: Float = -55
+    private static let deadMicTimeout: TimeInterval = 5
+
+    // MARK: - Interaction callbacks (wired by the app)
+
+    var onToggle: (() -> Void)?
+    var onHideForOneHour: (() -> Void)?
+    var onQuit: (() -> Void)?
+
     // MARK: - State
 
     private var panel: NSPanel!
+    private var contentView: HUDContentView!
     private var iconView: NSImageView!
     private var textLabel: NSTextField!
     private var elapsedLabel: NSTextField!
@@ -50,6 +114,11 @@ final class OverlayHUD {
     private var elapsedTimer: Timer?
     private var recordingStartedAt: Date?
     private var currentState: HUDState?
+    private var isHovering = false
+    /// Set when the mic has been silent past `deadMicTimeout` during a
+    /// recording; restyles the pill to warn and clears on the next real sample.
+    private var warningActive = false
+    private var lastAboveFloorAt = Date()
     /// Bumped on every show/hide so a stale fade-out completion doesn't
     /// orderOut a panel that has since been re-shown.
     private var hideGeneration: Int = 0
@@ -100,6 +169,8 @@ final class OverlayHUD {
         stopTimer()
         recordingStartedAt = nil
         currentState = nil
+        isHovering = false
+        warningActive = false
         guard let panel: NSPanel = panel, panel.isVisible else { return }
         hideGeneration += 1
         let generation: Int = hideGeneration
@@ -115,6 +186,14 @@ final class OverlayHUD {
 
     private func updateLevelOnMain(_ dbfs: Float) {
         guard panel != nil, isRecording(currentState) else { return }
+        if dbfs > Self.deadMicFloorDBFS {
+            lastAboveFloorAt = Date()
+            if warningActive {
+                warningActive = false
+                applyVisuals()
+                relayout()
+            }
+        }
         let clamped: Float = min(max(dbfs, Self.minDBFS), Self.maxDBFS)
         let fraction: Float = sqrt((clamped - Self.minDBFS) / (Self.maxDBFS - Self.minDBFS))
         let activeBars: Int = Int((fraction * Float(Self.barCount)).rounded())
@@ -136,7 +215,7 @@ final class OverlayHUD {
         newPanel.isFloatingPanel = true
         newPanel.level = .statusBar
         newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        newPanel.ignoresMouseEvents = true
+        newPanel.ignoresMouseEvents = false
         newPanel.backgroundColor = .clear
         newPanel.isOpaque = false
         newPanel.hasShadow = true
@@ -144,13 +223,16 @@ final class OverlayHUD {
         newPanel.isReleasedWhenClosed = false
         newPanel.animationBehavior = .none
 
-        let effect: NSVisualEffectView = NSVisualEffectView(frame: contentRect)
+        let effect: HUDContentView = HUDContentView(frame: contentRect)
         effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.appearance = NSAppearance(named: .darkAqua)
         effect.maskImage = Self.roundedRectMask(cornerRadius: Self.cornerRadius)
         effect.autoresizingMask = [.width, .height]
+        effect.onClick = { [weak self] in self?.onToggle?() }
+        effect.onHoverChange = { [weak self] hovering in self?.hoverChanged(hovering) }
+        effect.menuProvider = { [weak self] in self?.buildContextMenu() }
 
         iconView = NSImageView(frame: .zero)
         iconView.imageScaling = .scaleProportionallyUpOrDown
@@ -178,6 +260,7 @@ final class OverlayHUD {
         }
 
         newPanel.contentView = effect
+        contentView = effect
         panel = newPanel
     }
 
@@ -197,17 +280,95 @@ final class OverlayHUD {
         return image
     }
 
+    // MARK: - Context menu
+
+    private func buildContextMenu() -> NSMenu {
+        let menu: NSMenu = NSMenu()
+        let hideItem: NSMenuItem = NSMenuItem(
+            title: "Hide Flow-Bar for 1 hour",
+            action: #selector(menuHideForOneHour),
+            keyEquivalent: ""
+        )
+        hideItem.target = self
+        menu.addItem(hideItem)
+        menu.addItem(.separator())
+        let quitItem: NSMenuItem = NSMenuItem(
+            title: "Quit LocalFlow",
+            action: #selector(menuQuit),
+            keyEquivalent: ""
+        )
+        quitItem.target = self
+        menu.addItem(quitItem)
+        return menu
+    }
+
+    @objc private func menuHideForOneHour() { onHideForOneHour?() }
+    @objc private func menuQuit() { onQuit?() }
+
+    // MARK: - Hover
+
+    private func hoverChanged(_ hovering: Bool) {
+        guard isHovering != hovering else { return }
+        isHovering = hovering
+        // Only the idle pill changes shape on hover (collapsed icon ↔ hint).
+        guard isIdle(currentState) else { return }
+        applyVisuals()
+        relayout()
+    }
+
     // MARK: - State application
 
     private func applyState(_ state: HUDState, continuingRecording: Bool) {
+        let recording: Bool = isRecording(state)
+        if recording {
+            if !continuingRecording || recordingStartedAt == nil {
+                recordingStartedAt = Date()
+            }
+            // Every recording starts with a clean dead-mic watch, so a warning
+            // from a prior take can't carry over.
+            lastAboveFloorAt = Date()
+            warningActive = false
+            startTimerIfNeeded()
+        } else {
+            stopTimer()
+            recordingStartedAt = nil
+            warningActive = false
+            resetBars()
+        }
+        elapsedLabel.isHidden = !recording
+        for bar in barViews {
+            bar.isHidden = !recording
+        }
+        applyVisuals()
+        if recording {
+            updateElapsedText()
+        }
+    }
+
+    /// Sets the icon, colour, and label text for the current state (and the
+    /// dead-mic warning / idle-hover variants). Does not resize the panel.
+    private func applyVisuals() {
+        guard let state: HUDState = currentState else { return }
         let symbolName: String
         let iconColor: NSColor
         let text: String
+        var showText: Bool = true
         switch state {
+        case .idle:
+            symbolName = "mic"
+            iconColor = NSColor.white.withAlphaComponent(0.85)
+            text = "Hold ⌥ or click to dictate"
+            showText = isHovering
         case .recording(let handsFree):
-            symbolName = "mic.fill"
-            iconColor = .systemRed
-            text = handsFree ? "Recording (hands-free)…" : "Recording…"
+            if warningActive {
+                symbolName = "exclamationmark.triangle.fill"
+                iconColor = .systemOrange
+                text = "No mic input — check input volume"
+            } else {
+                symbolName = "mic.fill"
+                iconColor = .systemRed
+                text = handsFree ? "Recording (hands-free)…" : "Recording…"
+            }
         case .transcribing:
             symbolName = "waveform"
             iconColor = .white
@@ -221,24 +382,8 @@ final class OverlayHUD {
         let image: NSImage? = NSImage(systemSymbolName: symbolName, accessibilityDescription: text)
         iconView.image = image?.withSymbolConfiguration(config)
         iconView.contentTintColor = iconColor
-        textLabel.stringValue = text
-
-        let recording: Bool = isRecording(state)
-        elapsedLabel.isHidden = !recording
-        for bar in barViews {
-            bar.isHidden = !recording
-        }
-        if recording {
-            if !continuingRecording || recordingStartedAt == nil {
-                recordingStartedAt = Date()
-            }
-            startTimerIfNeeded()
-            updateElapsedText()
-        } else {
-            stopTimer()
-            recordingStartedAt = nil
-            resetBars()
-        }
+        textLabel.stringValue = showText ? text : ""
+        textLabel.isHidden = !showText
     }
 
     private func isRecording(_ state: HUDState?) -> Bool {
@@ -249,40 +394,74 @@ final class OverlayHUD {
         return false
     }
 
+    private func isIdle(_ state: HUDState?) -> Bool {
+        guard let state: HUDState = state else { return false }
+        if case .idle = state {
+            return true
+        }
+        return false
+    }
+
     // MARK: - Layout
+
+    private func relayout() {
+        guard let panel: NSPanel = panel, panel.isVisible else { return }
+        layoutContent()
+        repositionOnCurrentScreen()
+    }
 
     private func layoutContent() {
         textLabel.sizeToFit()
         elapsedLabel.sizeToFit()
         let recording: Bool = isRecording(currentState)
+        let showText: Bool = !textLabel.isHidden && !textLabel.stringValue.isEmpty
+        let idleCollapsed: Bool = isIdle(currentState) && !showText
         let meterWidth: CGFloat = CGFloat(Self.barCount) * Self.barWidth + CGFloat(Self.barCount - 1) * Self.barSpacing
 
-        var width: CGFloat = Self.horizontalPadding + Self.iconSize + Self.elementGap + textLabel.frame.width
+        var width: CGFloat = Self.horizontalPadding + Self.iconSize
+        if showText {
+            width += Self.elementGap + textLabel.frame.width
+        }
         if recording {
             width += Self.elementGap + Self.elapsedWidth + Self.elementGap + meterWidth
         }
         width += Self.horizontalPadding
-        width = max(width, Self.minPillWidth)
+        width = max(width, idleCollapsed ? Self.minIdleWidth : Self.minPillWidth)
 
         var panelFrame: NSRect = panel.frame
         panelFrame.size = NSSize(width: width, height: Self.pillHeight)
         panel.setFrame(panelFrame, display: false)
 
         let midY: CGFloat = Self.pillHeight / 2
+
+        // Idle-collapsed pill is just a centered mic glyph.
+        if idleCollapsed {
+            iconView.frame = NSRect(
+                x: (width - Self.iconSize) / 2,
+                y: midY - Self.iconSize / 2,
+                width: Self.iconSize,
+                height: Self.iconSize
+            )
+            return
+        }
+
         iconView.frame = NSRect(
             x: Self.horizontalPadding,
             y: midY - Self.iconSize / 2,
             width: Self.iconSize,
             height: Self.iconSize
         )
-        let labelX: CGFloat = Self.horizontalPadding + Self.iconSize + Self.elementGap
-        let labelHeight: CGFloat = textLabel.frame.height
-        textLabel.frame = NSRect(
-            x: labelX,
-            y: midY - labelHeight / 2,
-            width: textLabel.frame.width,
-            height: labelHeight
-        )
+
+        if showText {
+            let labelX: CGFloat = Self.horizontalPadding + Self.iconSize + Self.elementGap
+            let labelHeight: CGFloat = textLabel.frame.height
+            textLabel.frame = NSRect(
+                x: labelX,
+                y: midY - labelHeight / 2,
+                width: textLabel.frame.width,
+                height: labelHeight
+            )
+        }
 
         guard recording else { return }
         let meterX: CGFloat = width - Self.horizontalPadding - meterWidth
@@ -343,12 +522,12 @@ final class OverlayHUD {
         }
     }
 
-    // MARK: - Elapsed timer
+    // MARK: - Elapsed timer / dead-mic watch
 
     private func startTimerIfNeeded() {
         guard elapsedTimer == nil else { return }
         let timer: Timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] (_: Timer) in
-            self?.updateElapsedText()
+            self?.onTimerTick()
         }
         timer.tolerance = 0.1
         RunLoop.main.add(timer, forMode: .common)
@@ -360,10 +539,24 @@ final class OverlayHUD {
         elapsedTimer = nil
     }
 
+    private func onTimerTick() {
+        updateElapsedText()
+        checkDeadMic()
+    }
+
     private func updateElapsedText() {
         guard let startedAt: Date = recordingStartedAt else { return }
         let seconds: Int = max(0, Int(Date().timeIntervalSince(startedAt)))
         elapsedLabel.stringValue = String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
+    private func checkDeadMic() {
+        guard isRecording(currentState), !warningActive else { return }
+        if Date().timeIntervalSince(lastAboveFloorAt) >= Self.deadMicTimeout {
+            warningActive = true
+            applyVisuals()
+            relayout()
+        }
     }
 
     // MARK: - Level meter
@@ -381,5 +574,9 @@ final class OverlayHUD {
         for (index, bar) in barViews.enumerated() {
             setBar(bar, index: index, active: false)
         }
+    }
+
+    deinit {
+        stopTimer()
     }
 }

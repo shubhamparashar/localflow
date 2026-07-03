@@ -5,18 +5,16 @@ import Foundation
 /// a local HTML page — the "undo AI edit" escape hatch: any cleanup
 /// mistake can be recovered by copying the raw transcript.
 enum HistoryView {
-    static let reportFile: URL = Log.dir.appendingPathComponent("history.html")
     private static let maxEntries = 50
+    private static let window = HTMLReportWindow(
+        title: "LocalFlow History",
+        size: NSSize(width: 820, height: 640)
+    )
 
     static func present() {
         let records = loadRecords().suffix(maxEntries).reversed()
         let html = render(Array(records))
-        do {
-            try html.data(using: .utf8)?.write(to: reportFile)
-            NSWorkspace.shared.open(reportFile)
-        } catch {
-            Log.error("History render failed: \(error.localizedDescription)")
-        }
+        window.show(html: html)
     }
 
     private static func loadRecords() -> [DictationRecord] {
