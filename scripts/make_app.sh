@@ -1,0 +1,27 @@
+#!/bin/bash
+# Builds the release binary and wraps it into dist/LocalFlow.app.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+echo "==> swift build -c release"
+swift build -c release
+
+APP="dist/LocalFlow.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS"
+
+cp .build/release/LocalFlow "$APP/Contents/MacOS/LocalFlow"
+cp Resources/Info.plist "$APP/Contents/Info.plist"
+
+# Prefer a stable signing identity when one exists (keeps TCC grants like
+# Accessibility valid across rebuilds). Create one via Keychain Access →
+# Certificate Assistant → Create a Certificate → type: Code Signing, then
+# export CODESIGN_ID="<its name>". Falls back to ad-hoc signing, which
+# invalidates the Accessibility grant on every rebuild.
+IDENTITY="${CODESIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Code Signing|Development|LocalFlow/ {print $2; exit}')}"
+codesign --force --sign "${IDENTITY:--}" "$APP"
+echo "==> Signed with: ${IDENTITY:-ad-hoc}"
+
+echo "==> Built $APP"
+echo "    Launch with: open $APP"
