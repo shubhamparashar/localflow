@@ -131,4 +131,56 @@ final class PureLogicTests {
         #expect(CorrectionWatcher.editDistance("same", "same") == 0)
         #expect(CorrectionWatcher.editDistance("abcdefgh", "xyz") == Int.max)
     }
+
+    // MARK: - Transcription routing
+
+    @Test func routingEnglishWithParakeetReadyUsesParakeet() {
+        let decision = TranscriptionRouter.route(language: "en", parakeetReady: true)
+        #expect(decision == .init(engine: .parakeet, whisperLanguage: nil))
+    }
+
+    @Test func routingEnglishWithoutParakeetFallsBackToWhisper() {
+        let decision = TranscriptionRouter.route(language: "en", parakeetReady: false)
+        #expect(decision == .init(engine: .whisper, whisperLanguage: "en"))
+    }
+
+    @Test func routingHindiUsesWhisperWithHindiCode() {
+        let decision = TranscriptionRouter.route(language: "hi", parakeetReady: true)
+        #expect(decision == .init(engine: .whisper, whisperLanguage: "hi"))
+    }
+
+    @Test func routingAutoUsesWhisperWithNoLanguage() {
+        let decision = TranscriptionRouter.route(language: "auto", parakeetReady: true)
+        #expect(decision == .init(engine: .whisper, whisperLanguage: nil))
+    }
+
+    @Test func routingFrenchUsesWhisperWithFrenchCode() {
+        let decision = TranscriptionRouter.route(language: "fr", parakeetReady: true)
+        #expect(decision == .init(engine: .whisper, whisperLanguage: "fr"))
+    }
+
+    @Test func routingHinglishUsesWhisperWithHinglishCode() {
+        // "hinglish" isn't a real whisper language code — Transcriber special-cases
+        // it (English decode + romanized seed prompt) — routing must still hand it
+        // to whisper, untouched, so that special case fires downstream.
+        let decision = TranscriptionRouter.route(language: "hinglish", parakeetReady: true)
+        #expect(decision == .init(engine: .whisper, whisperLanguage: "hinglish"))
+    }
+
+    // MARK: - Config persistence
+
+    @Test func whisperLanguagePersistsAcrossReads() {
+        let original = Config.whisperLanguage
+        defer { Config.whisperLanguage = original }
+        Config.whisperLanguage = "fr"
+        #expect(Config.whisperLanguage == "fr")
+        Config.whisperLanguage = "auto"
+        #expect(Config.whisperLanguage == "auto")
+    }
+
+    @Test func whisperLanguagesTableCoversFullRange() {
+        #expect(Config.whisperLanguages.count > 90)
+        #expect(Config.whisperLanguages.contains { $0.code == "fr" && $0.name == "French" })
+        #expect(!Config.whisperLanguages.contains { $0.code == "hinglish" }, "pseudo-language is not a real whisper code")
+    }
 }

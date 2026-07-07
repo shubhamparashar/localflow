@@ -582,6 +582,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.state = Config.whisperLanguage == code ? .on : .off
             languageMenu.addItem(item)
         }
+        languageMenu.addItem(.separator())
+        let moreMenu = NSMenu()
+        for entry in Config.whisperLanguages where entry.code != "en" && entry.code != "hi" {
+            let item = NSMenuItem(title: entry.name, action: #selector(selectLanguage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.code
+            item.state = Config.whisperLanguage == entry.code ? .on : .off
+            moreMenu.addItem(item)
+        }
+        let moreRoot = NSMenuItem(title: "More Languages", action: nil, keyEquivalent: "")
+        languageMenu.addItem(moreRoot)
+        languageMenu.setSubmenu(moreMenu, for: moreRoot)
         let languageRoot = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
         menu.addItem(languageRoot)
         menu.setSubmenu(languageMenu, for: languageRoot)

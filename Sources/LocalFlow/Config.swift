@@ -57,13 +57,45 @@ enum Config {
         return port == 0 ? 11434 : port
     }
 
-    /// Whisper decode language: "en" (default), "hi", "hinglish"
-    /// (English decode + romanized-Hindi seed for code-switched speech),
-    /// or "auto" (detect).
+    /// Whisper decode language: "en" (default), any code from
+    /// `whisperLanguages` below, "hinglish" (English decode + romanized-Hindi
+    /// seed for code-switched speech), or "auto" (detect).
     static var whisperLanguage: String {
         get { defaults.string(forKey: "whisperLanguage") ?? "en" }
         set { defaults.set(newValue, forKey: "whisperLanguage") }
     }
+
+    /// The full whisper.cpp language table (large-v3-turbo's ~100 supported
+    /// languages), code → English display name, alphabetical by name.
+    /// "hinglish" and "auto" are pseudo-languages handled separately and are
+    /// not part of this table.
+    static let whisperLanguages: [(code: String, name: String)] = [
+        ("af", "Afrikaans"), ("am", "Amharic"), ("ar", "Arabic"), ("as", "Assamese"),
+        ("az", "Azerbaijani"), ("ba", "Bashkir"), ("be", "Belarusian"), ("bn", "Bengali"),
+        ("bs", "Bosnian"), ("br", "Breton"), ("bg", "Bulgarian"), ("ca", "Catalan"),
+        ("zh", "Chinese"), ("hr", "Croatian"), ("cs", "Czech"), ("da", "Danish"),
+        ("nl", "Dutch"), ("en", "English"), ("et", "Estonian"), ("fo", "Faroese"),
+        ("fi", "Finnish"), ("fr", "French"), ("gl", "Galician"), ("ka", "Georgian"),
+        ("de", "German"), ("el", "Greek"), ("gu", "Gujarati"), ("ht", "Haitian Creole"),
+        ("ha", "Hausa"), ("haw", "Hawaiian"), ("he", "Hebrew"), ("hi", "Hindi"),
+        ("hu", "Hungarian"), ("is", "Icelandic"), ("id", "Indonesian"), ("it", "Italian"),
+        ("ja", "Japanese"), ("jw", "Javanese"), ("kn", "Kannada"), ("kk", "Kazakh"),
+        ("km", "Khmer"), ("ko", "Korean"), ("lo", "Lao"), ("la", "Latin"),
+        ("lv", "Latvian"), ("ln", "Lingala"), ("lt", "Lithuanian"), ("lb", "Luxembourgish"),
+        ("mk", "Macedonian"), ("mg", "Malagasy"), ("ms", "Malay"), ("ml", "Malayalam"),
+        ("mt", "Maltese"), ("mi", "Maori"), ("mr", "Marathi"), ("mn", "Mongolian"),
+        ("my", "Myanmar"), ("ne", "Nepali"), ("no", "Norwegian"), ("nn", "Nynorsk"),
+        ("oc", "Occitan"), ("ps", "Pashto"), ("fa", "Persian"), ("pl", "Polish"),
+        ("pt", "Portuguese"), ("pa", "Punjabi"), ("ro", "Romanian"), ("ru", "Russian"),
+        ("sa", "Sanskrit"), ("sr", "Serbian"), ("sn", "Shona"), ("sd", "Sindhi"),
+        ("si", "Sinhala"), ("sk", "Slovak"), ("sl", "Slovenian"), ("so", "Somali"),
+        ("es", "Spanish"), ("su", "Sundanese"), ("sw", "Swahili"), ("sv", "Swedish"),
+        ("tl", "Tagalog"), ("tg", "Tajik"), ("ta", "Tamil"), ("tt", "Tatar"),
+        ("te", "Telugu"), ("th", "Thai"), ("bo", "Tibetan"), ("tr", "Turkish"),
+        ("tk", "Turkmen"), ("uk", "Ukrainian"), ("ur", "Urdu"), ("uz", "Uzbek"),
+        ("vi", "Vietnamese"), ("cy", "Welsh"), ("yi", "Yiddish"), ("yo", "Yoruba"),
+        ("yue", "Cantonese"),
+    ]
 
     static var handsFreeEnabled: Bool {
         get { defaults.object(forKey: "handsFreeEnabled") as? Bool ?? true }
