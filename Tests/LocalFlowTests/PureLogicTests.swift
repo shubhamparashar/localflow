@@ -201,4 +201,19 @@ final class PureLogicTests {
         #expect(quiet.vadOffsetDb < normal.vadOffsetDb)
         #expect(quiet.vadFloorDb < normal.vadFloorDb)
     }
+
+    // MARK: - Partial-caption tick scheduler
+
+    @Test func partialTickSkipsBeforeThreshold() {
+        #expect(!PartialCaptionScheduler.shouldRunTick(elapsedSamples: 8_000, samplesPerTick: 16_000, inFlight: false))
+    }
+
+    @Test func partialTickRunsAtThresholdWhenIdle() {
+        #expect(PartialCaptionScheduler.shouldRunTick(elapsedSamples: 16_000, samplesPerTick: 16_000, inFlight: false))
+        #expect(PartialCaptionScheduler.shouldRunTick(elapsedSamples: 20_000, samplesPerTick: 16_000, inFlight: false))
+    }
+
+    @Test func partialTickSkipsAtThresholdWhenBusy() {
+        #expect(!PartialCaptionScheduler.shouldRunTick(elapsedSamples: 16_000, samplesPerTick: 16_000, inFlight: true))
+    }
 }

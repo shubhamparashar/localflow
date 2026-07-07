@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let hotkey = HotkeyMonitor()
     private let recorder = AudioRecorder()
+    private let partialCaptionRunner = PartialCaptionRunner()
     private let injector = TextInjector()
     private let server = WhisperServerManager()
     private let hud = OverlayHUD()
@@ -77,6 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         recorder.onLevel = { [weak self] dbfs in
             self?.hud.updateLevel(dbfs)
+        }
+        recorder.onPartialAudio = { [weak self] samples in
+            self?.handlePartialAudio(samples)
+        }
+        recorder.isPartialInferenceBusy = { [weak self] in
+            self?.partialCaptionRunner.isBusy ?? true
         }
         hud.onToggle = { [weak self] in self?.toggleDictationFromHUD() }
         hud.onHideForOneHour = { [weak self] in self?.hideHUDForOneHour() }
@@ -176,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CorrectionWatcher.shared.checkPending()
         // Captured at press time: the app the user is dictating into.
         sessionProfile = AppContext.currentProfile()
+        partialCaptionRunner.cancel()
         do {
             try recorder.start()
             state = .recording
@@ -192,10 +200,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func endDictation() {
         guard state == .recording, !stopScheduled else { return }
         stopScheduled = true
+        partialCaptionRunner.cancel()
         // Wait for the speaker to actually pause (up to 1.5 s) so a key
         // released mid-word doesn't clip the utterance.
         recorder.stopAfterTrailingSilence { [weak self] wav in
             self?.processRecording(wav)
+        }
+    }
+
+    /// Live caption for the Flow-Bar while recording — HUD-only, never part
+    /// of the final transcript. Runs only when Parakeet is the active
+    /// engine; whisper-server dictations skip partials entirely so the pill
+    /// behaves exactly as before.
+    private func handlePartialAudio(_ samples: [Float]) {
+        guard Config.whisperLanguage == "en", ParakeetTranscriber.shared.isReady else { return }
+        partialCaptionRunner.run(samples: samples) { [weak self] caption in
+            guard let self, self.state == .recording else { return }
+            Log.info("Partial caption (\(caption.count) chars)")
+            self.hud.updateCaption(caption)
         }
     }
 
