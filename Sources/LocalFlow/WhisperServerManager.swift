@@ -12,7 +12,7 @@ final class WhisperServerManager {
     }
 
     func ensureRunning(completion: @escaping (Bool) -> Void) {
-        healthCheck { alive in
+        checkHealth { alive in
             if alive {
                 Log.info("whisper-server already running on port \(Config.serverPort)")
                 completion(true)
@@ -77,7 +77,7 @@ final class WhisperServerManager {
     }
 
     private func pollUntilHealthy(deadline: Date, completion: @escaping (Bool) -> Void) {
-        healthCheck { alive in
+        checkHealth { alive in
             if alive {
                 Log.info("whisper-server is up")
                 completion(true)
@@ -99,7 +99,9 @@ final class WhisperServerManager {
         }
     }
 
-    private func healthCheck(_ completion: @escaping (Bool) -> Void) {
+    /// Pings the whisper-server HTTP health endpoint; does not spawn a
+    /// process, so safe to call from any owner just to check reachability.
+    func checkHealth(_ completion: @escaping (Bool) -> Void) {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(Config.serverPort)/")!)
         request.timeoutInterval = 2
         URLSession.shared.dataTask(with: request) { _, response, _ in
