@@ -2,6 +2,23 @@ import AppKit
 import ApplicationServices
 import ServiceManagement
 
+/// Pure decision for what a finished take does with its transcript. Command
+/// mode and the claude-pipe route both skip cleanup/injection, applying the
+/// transcript elsewhere instead; a plain take runs the normal cleanup+inject
+/// pipeline. Extracted so the precedence (`command` wins if both flags were
+/// somehow set) is unit-testable without touching AppKit/AppDelegate state.
+enum DictationRoute: Equatable {
+    case command
+    case claudePipe
+    case normal
+
+    static func decide(isCommand: Bool, isClaudePipe: Bool) -> DictationRoute {
+        if isCommand { return .command }
+        if isClaudePipe { return .claudePipe }
+        return .normal
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let hotkey = HotkeyMonitor()
@@ -29,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pressStartedAt: Date?
     private var handsFreeArmed = false
     private var sessionIsCommand = false
+    private var sessionIsClaudePipe = false
     private var commandSelection: String?
     private var lastRawTranscript: String?
     private var sessionProfile: AppCategoryProfile?
@@ -92,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.onQuit = { NSApp.terminate(nil) }
         hud.onSelectLanguage = { [weak self] code in self?.selectLanguageFromPill(code) }
         hud.moreLanguagesMenuProvider = { [weak self] in self?.buildMoreLanguagesMenu() ?? NSMenu() }
+        hud.onDictateToClaude = { [weak self] in self?.startClaudePipeDictation() }
         settings.onChanged = { [weak self] in
             self?.rebuildMenu()
             self?.refreshIdleHUD()
@@ -249,9 +268,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func processRecording(_ wav: Data?) {
         stopScheduled = false
         let isCommand = sessionIsCommand
-        let mode = isCommand ? "command" : (handsFreeArmed ? "handsFree" : "hold")
+        let isClaudePipe = sessionIsClaudePipe
+        let mode = isCommand ? "command" : (isClaudePipe ? "claudePipe" : (handsFreeArmed ? "handsFree" : "hold"))
         handsFreeArmed = false
         sessionIsCommand = false
+        sessionIsClaudePipe = false
         guard let wav else {
             state = .idle
             return
@@ -269,14 +290,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.commandSelection = selection
                 Log.info("Command mode: selection \(selection.map { "\($0.count) chars" } ?? "none")")
-                self.transcribeAndRoute(wav, isCommand: true, mode: mode)
+                self.transcribeAndRoute(wav, isCommand: true, isClaudePipe: false, mode: mode)
             }
         } else {
-            transcribeAndRoute(wav, isCommand: false, mode: mode)
+            transcribeAndRoute(wav, isCommand: false, isClaudePipe: isClaudePipe, mode: mode)
         }
     }
 
-    private func transcribeAndRoute(_ wav: Data, isCommand: Bool, mode: String) {
+    private func transcribeAndRoute(_ wav: Data, isCommand: Bool, isClaudePipe: Bool, mode: String) {
         let sttStarted = Date()
         let profile = sessionProfile
         let fieldContext = sessionFieldContext
@@ -290,9 +311,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Log.info("Empty transcript, nothing to inject")
                     return
                 }
-                if isCommand {
+                switch DictationRoute.decide(isCommand: isCommand, isClaudePipe: isClaudePipe) {
+                case .command:
                     self.runCommand(instruction: text)
-                } else {
+                case .claudePipe:
+                    self.runClaudePipe(transcript: text)
+                case .normal:
                     self.lastRawTranscript = text
                     let willClean = Config.cleanupEnabled
                         && text.count >= OllamaCleaner.minimumLength
@@ -353,6 +377,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .failure(let error):
                 Log.error("Command mode failed (is Ollama running?): \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// Runs the raw transcript through `Config.claudePipeCommand` and appends
+    /// the exchange to the Scratchpad. Skips cleanup/injection entirely — the
+    /// transcript is the prompt, not text meant for the focused app.
+    private func runClaudePipe(transcript: String) {
+        guard Config.claudePipeEnabled else { return }
+        Log.info("Claude pipe: dispatching transcript (\(transcript.count) chars)")
+        hud.show(.cleaning)
+        ClaudePipe.run(command: Config.claudePipeCommand, transcript: transcript) { [weak self] result in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                if self.state != .recording { self.refreshIdleHUD() }
+                switch result {
+                case .success(let output):
+                    Log.info("Claude pipe: response received (\(output.count) chars)")
+                    self.scratchpad.append("You: \(transcript)\n\nClaude: \(output)\n\n")
+                case .failure(let error):
+                    Log.error("Claude pipe failed: \(error.message)")
+                    self.scratchpad.append("You: \(transcript)\n\nClaude error: \(error.message)\n\n")
+                }
+                self.scratchpad.show()
+            }
+        }
+    }
+
+    /// Arms the next take as a claude-pipe take and starts it hands-free
+    /// (mirrors `startHandsFreeDictation`), triggered from the pill's
+    /// right-click menu or the status-bar menu.
+    private func startClaudePipeDictation() {
+        guard Config.claudePipeEnabled else { return }
+        guard state == .idle || state == .transcribing else { return }
+        handsFreeArmed = false
+        sessionIsCommand = false
+        sessionIsClaudePipe = true
+        beginDictation()
+        if state == .recording {
+            handsFreeArmed = true
+            recorder.enableAutoStop()
         }
     }
 
@@ -547,6 +611,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         scratchpadItem.target = self
         menu.addItem(scratchpadItem)
+
+        if Config.claudePipeEnabled {
+            let dictateToClaude = NSMenuItem(
+                title: "Dictate to Claude",
+                action: #selector(startClaudePipeDictationFromMenu),
+                keyEquivalent: ""
+            )
+            dictateToClaude.target = self
+            menu.addItem(dictateToClaude)
+        }
+        let claudePipeToggle = NSMenuItem(
+            title: "Enable Claude Pipe",
+            action: #selector(toggleClaudePipe),
+            keyEquivalent: ""
+        )
+        claudePipeToggle.target = self
+        claudePipeToggle.state = Config.claudePipeEnabled ? .on : .off
+        menu.addItem(claudePipeToggle)
         menu.addItem(.separator())
 
         let cleanup = NSMenuItem(
@@ -791,6 +873,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showScratchpad() {
         scratchpad.show()
+    }
+
+    @objc private func toggleClaudePipe() {
+        Config.claudePipeEnabled.toggle()
+        Log.info("Claude pipe \(Config.claudePipeEnabled ? "enabled" : "disabled")")
+        rebuildMenu()
+    }
+
+    @objc private func startClaudePipeDictationFromMenu() {
+        startClaudePipeDictation()
     }
 
     /// Rewrites the current selection in the focused app (grammar/clarity)

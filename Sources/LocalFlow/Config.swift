@@ -272,6 +272,20 @@ enum Config {
         set { defaults.set(newValue, forKey: "openDashboardOnLaunch") }
     }
 
+    /// "Dictate to Claude" route: off by default so the pill/menu items and
+    /// the extra armed-take path stay invisible until explicitly enabled.
+    static var claudePipeEnabled: Bool {
+        get { defaults.object(forKey: "claudePipeEnabled") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "claudePipeEnabled") }
+    }
+
+    /// Shell command run with the transcript substituted for `{text}`; see
+    /// `ClaudePipe.buildInvocation` for how the substitution is done safely.
+    static var claudePipeCommand: String {
+        get { defaults.string(forKey: "claudePipeCommand") ?? "claude -p {text}" }
+        set { defaults.set(newValue, forKey: "claudePipeCommand") }
+    }
+
     static var vadModelPath: String {
         Log.dir.appendingPathComponent("models/ggml-silero-v5.1.2.bin").path
     }

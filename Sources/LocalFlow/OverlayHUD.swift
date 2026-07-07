@@ -177,6 +177,9 @@ final class OverlayHUD: NSObject {
     /// Supplies the "More Languages" submenu content, shared with the
     /// status-bar menu so the two surfaces don't diverge.
     var moreLanguagesMenuProvider: (() -> NSMenu)?
+    /// Fires when "Dictate to Claude" is picked from the pill's right-click
+    /// menu; only shown when `Config.claudePipeEnabled`.
+    var onDictateToClaude: (() -> Void)?
 
     // MARK: - State
 
@@ -407,6 +410,16 @@ final class OverlayHUD: NSObject {
         menu.addItem(languageRoot)
         menu.setSubmenu(buildLanguageMenu(), for: languageRoot)
         menu.addItem(.separator())
+        if Config.claudePipeEnabled {
+            let dictateToClaude: NSMenuItem = NSMenuItem(
+                title: "Dictate to Claude",
+                action: #selector(menuDictateToClaude),
+                keyEquivalent: ""
+            )
+            dictateToClaude.target = self
+            menu.addItem(dictateToClaude)
+            menu.addItem(.separator())
+        }
         let hideItem: NSMenuItem = NSMenuItem(
             title: "Hide Flow-Bar for 1 hour",
             action: #selector(menuHideForOneHour),
@@ -427,6 +440,7 @@ final class OverlayHUD: NSObject {
 
     @objc private func menuHideForOneHour() { onHideForOneHour?() }
     @objc private func menuQuit() { onQuit?() }
+    @objc private func menuDictateToClaude() { onDictateToClaude?() }
     @objc private func menuResetPosition() { resetPosition() }
     @objc private func menuSelectLanguage(_ sender: NSMenuItem) {
         guard let code = sender.representedObject as? String else { return }
