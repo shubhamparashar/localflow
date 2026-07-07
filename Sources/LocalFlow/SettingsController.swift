@@ -28,6 +28,7 @@ final class SettingsController: NSObject {
     private var hotkeyPopup: NSPopUpButton?
     private var languagePopup: NSPopUpButton?
     private var cleanupCheck: NSButton?
+    private var cleanupLevelPopup: NSPopUpButton?
     private var handsFreeCheck: NSButton?
     private var smartSpacingCheck: NSButton?
     private var showFlowBarCheck: NSButton?
@@ -83,6 +84,16 @@ final class SettingsController: NSObject {
         cleanupCheck = checkbox("Clean up transcripts with Ollama", #selector(cleanupChanged))
         stack.addArrangedSubview(cleanupCheck!)
         stack.addArrangedSubview(note("Kept warm; roughly 1.5s per cleanup. Off = instant raw text."))
+
+        let level = NSPopUpButton(frame: .zero, pullsDown: false)
+        for choice in CleanupLevel.allCases {
+            level.addItem(withTitle: choice.displayName)
+            level.lastItem?.representedObject = choice.rawValue
+        }
+        level.target = self
+        level.action = #selector(cleanupLevelChanged)
+        cleanupLevelPopup = level
+        stack.addArrangedSubview(labeled("Cleanup level:", level))
 
         stack.addArrangedSubview(header("Flow-Bar"))
         showFlowBarCheck = checkbox("Show the always-on Flow-Bar pill", #selector(showFlowBarChanged))
@@ -161,6 +172,7 @@ final class SettingsController: NSObject {
         select(languagePopup, value: Config.whisperLanguage)
         cleanupCheck?.title = "Clean up transcripts with Ollama (\(Config.ollamaModel))"
         cleanupCheck?.state = Config.cleanupEnabled ? .on : .off
+        select(cleanupLevelPopup, value: Config.cleanupLevel.rawValue)
         handsFreeCheck?.state = Config.handsFreeEnabled ? .on : .off
         smartSpacingCheck?.state = Config.smartSpacing ? .on : .off
         showFlowBarCheck?.state = Config.showIdleHUD ? .on : .off
@@ -196,6 +208,13 @@ final class SettingsController: NSObject {
         let enabled = sender.state == .on
         Config.cleanupEnabled = enabled
         onCleanupEnabled?(enabled)
+        onChanged?()
+    }
+
+    @objc private func cleanupLevelChanged() {
+        guard let raw = cleanupLevelPopup?.selectedItem?.representedObject as? String,
+              let level = CleanupLevel(rawValue: raw) else { return }
+        Config.cleanupLevel = level
         onChanged?()
     }
 

@@ -124,6 +124,85 @@ final class PureLogicTests {
         #expect(OllamaCleaner.sentenceWindows("Just one.", maxLength: 500) == ["Just one."])
     }
 
+    // MARK: - Cleanup levels & styles
+
+    @Test func cleanupLevelsProduceDistinctPrompts() {
+        let light = OllamaCleaner.cleanupSystemPrompt(glossary: [], level: .light)
+        let medium = OllamaCleaner.cleanupSystemPrompt(glossary: [], level: .medium)
+        let high = OllamaCleaner.cleanupSystemPrompt(glossary: [], level: .high)
+        let code = OllamaCleaner.cleanupSystemPrompt(glossary: [], level: .medium, style: .code)
+        #expect(Set([light, medium, high, code]).count == 4)
+        #expect(!light.contains("homophones"), "light skips error correction")
+        #expect(medium.contains("homophones"))
+        #expect(high.contains("Smooth awkward grammar"))
+        #expect(!medium.contains("Smooth awkward grammar"))
+    }
+
+    @Test func noneLevelBypassesOllamaEntirely() async {
+        let savedEnabled = Config.cleanupEnabled
+        let savedLevel = Config.cleanupLevel
+        Config.cleanupEnabled = true
+        Config.cleanupLevel = .none
+        defer {
+            Config.cleanupEnabled = savedEnabled
+            Config.cleanupLevel = savedLevel
+        }
+        let raw = String(repeating: "some transcript text well over the minimum length. ", count: 3)
+        // No Ollama server runs in tests: an immediate raw-text completion
+        // proves the bypass (a real request would only fall back to raw after
+        // a network failure/timeout).
+        let started = Date()
+        let result: String = await withCheckedContinuation { cont in
+            OllamaCleaner.clean(raw) { cont.resume(returning: $0) }
+        }
+        #expect(result == raw)
+        #expect(Date().timeIntervalSince(started) < 0.5)
+    }
+
+    @Test func cleanupLevelRoundTripsThroughConfig() {
+        let saved = Config.cleanupLevel
+        defer { Config.cleanupLevel = saved }
+        for level in CleanupLevel.allCases {
+            Config.cleanupLevel = level
+            #expect(Config.cleanupLevel == level)
+            #expect(UserDefaults.standard.string(forKey: "cleanupLevel") == level.rawValue)
+        }
+    }
+
+    @Test func codeStylePromptPreservesIdentifiers() {
+        let prompt = OllamaCleaner.cleanupSystemPrompt(glossary: ["Kysely"], level: .medium, style: .code)
+        #expect(prompt.contains("camelCase"))
+        #expect(prompt.contains("snake_case"))
+        #expect(prompt.contains("Never alter the casing"))
+        #expect(prompt.contains("Kysely"), "glossary bias included like the normal prompt")
+    }
+
+    @Test func guardsAcceptFaithfulCodeStyleCleanup() {
+        let raw = "um so rename the get_user_id function to fetchUserId and update the snake_case call sites"
+        let cleaned = "Rename the get_user_id function to fetchUserId and update the snake_case call sites."
+        #expect(OllamaCleaner.guardsAccept(raw: raw, cleaned: cleaned))
+    }
+
+    @Test func codeCategoryDefaultsToCodeStyle() {
+        let profile = AppContext.lookupProfile(
+            bundleId: "com.apple.Terminal",
+            mapping: ["com.apple.Terminal": CategoryMappingEntry(category: "code", style: nil)]
+        )
+        #expect(profile.category == "code")
+        #expect(profile.styleOverride == .code)
+        #expect(profile.cleanupEnabled)
+    }
+
+    @Test func mappingStyleOverrideWinsAndLegacyStringsParse() throws {
+        let json = #"{"com.apple.mail": "email", "com.microsoft.VSCode": {"category": "code", "style": "casual"}}"#
+        let mapping = try #require(AppContext.parseMapping(Data(json.utf8)))
+        let mail = AppContext.lookupProfile(bundleId: "com.apple.mail", mapping: mapping)
+        #expect(mail.category == "email")
+        #expect(mail.styleOverride == nil)
+        let vscode = AppContext.lookupProfile(bundleId: "com.microsoft.VSCode", mapping: mapping)
+        #expect(vscode.styleOverride == .casual)
+    }
+
     // MARK: - Edit distance (glossary diffing)
 
     @Test func editDistance() {
