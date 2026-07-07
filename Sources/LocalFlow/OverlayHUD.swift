@@ -178,6 +178,9 @@ final class OverlayHUD: NSObject {
     /// recording; restyles the pill to warn and clears on the next real sample.
     private var warningActive = false
     private var lastAboveFloorAt = Date()
+    /// Live caption text for the current recording, set by `updateCaption`.
+    /// Replaces (never appends to) the pill's status text while recording.
+    private var recordingCaption = ""
     /// Bumped on every show/hide so a stale fade-out completion doesn't
     /// orderOut a panel that has since been re-shown.
     private var hideGeneration: Int = 0
@@ -197,6 +200,12 @@ final class OverlayHUD: NSObject {
 
     func updateLevel(_ dbfs: Float) {
         performOnMain { self.updateLevelOnMain(dbfs) }
+    }
+
+    /// Replaces the recording pill's caption text (e.g. a live partial
+    /// transcript). No-op outside the recording state.
+    func updateCaption(_ text: String) {
+        performOnMain { self.updateCaptionOnMain(text) }
     }
 
     // MARK: - Main-thread implementations
@@ -249,6 +258,13 @@ final class OverlayHUD: NSObject {
             panel.orderOut(nil)
             panel.alphaValue = 1
         })
+    }
+
+    private func updateCaptionOnMain(_ text: String) {
+        guard isRecording(currentState) else { return }
+        recordingCaption = text
+        applyVisuals()
+        relayout()
     }
 
     private func updateLevelOnMain(_ dbfs: Float) {
@@ -403,6 +419,7 @@ final class OverlayHUD: NSObject {
         if recording {
             if !continuingRecording || recordingStartedAt == nil {
                 recordingStartedAt = Date()
+                recordingCaption = ""
             }
             // Every recording starts with a clean dead-mic watch, so a warning
             // from a prior take can't carry over.
@@ -413,6 +430,7 @@ final class OverlayHUD: NSObject {
             stopTimer()
             recordingStartedAt = nil
             warningActive = false
+            recordingCaption = ""
             resetBars()
         }
         elapsedLabel.isHidden = !recording
@@ -444,6 +462,10 @@ final class OverlayHUD: NSObject {
                 symbolName = "exclamationmark.triangle.fill"
                 iconColor = .systemOrange
                 text = "No mic input — check input volume"
+            } else if !recordingCaption.isEmpty {
+                symbolName = "mic.fill"
+                iconColor = .systemRed
+                text = recordingCaption
             } else {
                 symbolName = "mic.fill"
                 iconColor = .systemRed

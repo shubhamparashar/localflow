@@ -131,4 +131,19 @@ final class PureLogicTests {
         #expect(CorrectionWatcher.editDistance("same", "same") == 0)
         #expect(CorrectionWatcher.editDistance("abcdefgh", "xyz") == Int.max)
     }
+
+    // MARK: - Partial-caption tick scheduler
+
+    @Test func partialTickSkipsBeforeThreshold() {
+        #expect(!PartialCaptionScheduler.shouldRunTick(elapsedSamples: 8_000, samplesPerTick: 16_000, inFlight: false))
+    }
+
+    @Test func partialTickRunsAtThresholdWhenIdle() {
+        #expect(PartialCaptionScheduler.shouldRunTick(elapsedSamples: 16_000, samplesPerTick: 16_000, inFlight: false))
+        #expect(PartialCaptionScheduler.shouldRunTick(elapsedSamples: 20_000, samplesPerTick: 16_000, inFlight: false))
+    }
+
+    @Test func partialTickSkipsAtThresholdWhenBusy() {
+        #expect(!PartialCaptionScheduler.shouldRunTick(elapsedSamples: 16_000, samplesPerTick: 16_000, inFlight: true))
+    }
 }

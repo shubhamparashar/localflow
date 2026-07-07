@@ -58,7 +58,17 @@ final class ParakeetTranscriber {
     /// The completion is called on the main queue.
     func transcribe(wav: Data, completion: @escaping (Result<String, Error>) -> Void) {
         DispatchQueue.main.async {
-            self.startTranscription(wav: wav, completion: completion)
+            self.startTranscription(samples: Self.floatSamples(fromWav: wav), completion: completion)
+        }
+    }
+
+    /// Same as `transcribe(wav:)` but takes normalized 16kHz mono Float
+    /// samples directly, skipping the WAV encode/decode round trip. Used for
+    /// rolling partial-caption snapshots where the caller already holds the
+    /// samples in memory.
+    func transcribe(samples: [Float], completion: @escaping (Result<String, Error>) -> Void) {
+        DispatchQueue.main.async {
+            self.startTranscription(samples: samples, completion: completion)
         }
     }
 
@@ -107,7 +117,7 @@ final class ParakeetTranscriber {
 
     // MARK: - Transcription
 
-    private func startTranscription(wav: Data, completion: @escaping (Result<String, Error>) -> Void) {
+    private func startTranscription(samples: [Float], completion: @escaping (Result<String, Error>) -> Void) {
         #if canImport(FluidAudio)
         if #available(macOS 14.0, *) {
             guard isReady, let manager = engine as? AsrManager else {
@@ -115,7 +125,6 @@ final class ParakeetTranscriber {
                 completion(.failure(err))
                 return
             }
-            let samples = Self.floatSamples(fromWav: wav)
             guard samples.count >= Self.minimumSamples else {
                 Log.info("Parakeet: clip too short (\(samples.count) samples), returning empty transcript")
                 completion(.success(""))

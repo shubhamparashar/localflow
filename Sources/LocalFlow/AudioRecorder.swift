@@ -1,5 +1,16 @@
 import AVFoundation
 
+/// Decides whether a rolling ~1s audio tick should trigger a new
+/// partial-caption inference: enough new audio has accumulated since the
+/// last tick, and no previous partial inference is still running (ticks are
+/// dropped rather than queued, so the Flow-Bar caption never falls behind).
+enum PartialCaptionScheduler {
+    static func shouldRunTick(elapsedSamples: Int, samplesPerTick: Int, inFlight: Bool) -> Bool {
+        guard elapsedSamples >= samplesPerTick else { return false }
+        return !inFlight
+    }
+}
+
 /// Captures microphone audio and accumulates it as 16 kHz mono Float32
 /// samples, the input format whisper.cpp expects.
 final class AudioRecorder {
@@ -15,6 +26,20 @@ final class AudioRecorder {
 
     /// Fired per audio chunk (~10 Hz, main queue) with the level in dBFS.
     var onLevel: ((Float) -> Void)?
+
+    /// Fired roughly once per second of recorded audio (background queue)
+    /// with a snapshot of all samples accumulated so far. HUD-only: the
+    /// snapshot is for live captions, never for the final injected
+    /// transcript.
+    var onPartialAudio: (([Float]) -> Void)?
+
+    /// Polled once per tick to decide whether to fire `onPartialAudio` —
+    /// return true while a previous partial inference is still running so
+    /// this tick gets skipped instead of queued.
+    var isPartialInferenceBusy: (() -> Bool)?
+
+    private var samplesSinceLastPartialTick = 0
+    private static let partialTickSamples = Int(targetSampleRate) // ~1s
 
     /// Speaking duration of the most recently stopped recording.
     private(set) var lastDurationSec: Double = 0
@@ -61,6 +86,7 @@ final class AudioRecorder {
         lastSpeechAt = .distantPast
         noiseFloorDb = -70
         recordingStartedAt = Date()
+        samplesSinceLastPartialTick = 0
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
@@ -154,8 +180,31 @@ final class AudioRecorder {
         }
         guard let channel = out.floatChannelData?[0], out.frameLength > 0 else { return }
         let chunk = Array(UnsafeBufferPointer(start: channel, count: Int(out.frameLength)))
-        sampleQueue.async { self.samples.append(contentsOf: chunk) }
+        sampleQueue.async {
+            self.samples.append(contentsOf: chunk)
+            self.checkPartialTick(addedSamples: chunk.count)
+        }
         evaluateEndpoint(chunk)
+    }
+
+    /// Runs on `sampleQueue` (background) so the snapshot copy never touches
+    /// the audio tap thread.
+    private func checkPartialTick(addedSamples: Int) {
+        guard onPartialAudio != nil else { return }
+        samplesSinceLastPartialTick += addedSamples
+        let elapsed = samplesSinceLastPartialTick
+        guard elapsed >= Self.partialTickSamples else { return }
+        samplesSinceLastPartialTick = 0
+        let busy = isPartialInferenceBusy?() ?? false
+        guard PartialCaptionScheduler.shouldRunTick(
+            elapsedSamples: elapsed,
+            samplesPerTick: Self.partialTickSamples,
+            inFlight: busy
+        ) else {
+            Log.info("Partial caption tick skipped (inference in flight)")
+            return
+        }
+        onPartialAudio?(samples)
     }
 
     /// Arms hands-free endpointing: the recording stops itself once speech
