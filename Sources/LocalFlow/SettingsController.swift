@@ -150,6 +150,16 @@ final class SettingsController: NSObject {
         fileRow.spacing = 8
         stack.addArrangedSubview(fileRow)
 
+        stack.addArrangedSubview(header("Import Glossary Terms"))
+        let contactsButton = NSButton(title: "From Contacts…", target: self, action: #selector(importFromContacts))
+        let gitButton = NSButton(title: "From Git Authors…", target: self, action: #selector(importFromGitAuthors))
+        let identifiersButton = NSButton(title: "From Repo Code…", target: self, action: #selector(importFromRepoIdentifiers))
+        [contactsButton, gitButton, identifiersButton].forEach { $0.bezelStyle = .rounded }
+        let importRow = NSStackView(views: [contactsButton, gitButton, identifiersButton])
+        importRow.orientation = .horizontal
+        importRow.spacing = 8
+        stack.addArrangedSubview(importRow)
+
         return stack
     }
 
@@ -271,5 +281,56 @@ final class SettingsController: NSObject {
 
     @objc private func editCategories() {
         AppContext.openInEditor()
+    }
+
+    @objc private func importFromContacts() {
+        GlossaryImporter.importFromContacts { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let candidates):
+                    self?.reportImport(GlossaryImporter.appendToGlossary(candidates))
+                case .failure(let error):
+                    Log.error("Contacts import failed: \(error)")
+                    self?.reportImportFailure("LocalFlow couldn't access Contacts. Grant access in System Settings > Privacy & Security > Contacts.")
+                }
+            }
+        }
+    }
+
+    @objc private func importFromGitAuthors() {
+        guard let repoPath = pickRepoDirectory() else { return }
+        let candidates = GlossaryImporter.importFromGitAuthors(repoPath: repoPath)
+        reportImport(GlossaryImporter.appendToGlossary(candidates))
+    }
+
+    @objc private func importFromRepoIdentifiers() {
+        guard let repoPath = pickRepoDirectory() else { return }
+        let candidates = GlossaryImporter.importFromRepoIdentifiers(repoPath: repoPath)
+        reportImport(GlossaryImporter.appendToGlossary(candidates))
+    }
+
+    private func pickRepoDirectory() -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Repository"
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path
+    }
+
+    private func reportImport(_ count: Int) {
+        let alert = NSAlert()
+        alert.messageText = count > 0 ? "Added \(count) new terms" : "No new terms found"
+        alert.alertStyle = .informational
+        alert.runModal()
+    }
+
+    private func reportImportFailure(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Import Failed"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 }
