@@ -167,6 +167,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func beginDictation() {
         guard state == .idle || state == .transcribing else { return }
+        guard !improveInFlight else {
+            Log.info("Dictation rejected: improve in flight")
+            return
+        }
         // The user is done editing the previous dictation by now — harvest
         // any respellings they made as glossary suggestions.
         CorrectionWatcher.shared.checkPending()
@@ -707,21 +711,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Rewrites the current selection in the focused app (grammar/clarity)
     /// without a spoken instruction — command mode with a fixed prompt.
+    /// Holds the pipeline while an improve rewrite is running so a hotkey
+    /// press can't interleave a second injection mid-improve.
+    private var improveInFlight = false
+
     @objc private func improveSelectedText() {
-        guard state == .idle else {
+        guard state == .idle, !improveInFlight else {
             Log.info("Improve: busy, ignoring")
             return
         }
+        improveInFlight = true
         injector.captureSelection { [weak self] selection in
             guard let self else { return }
             guard let selection, !selection.isEmpty else {
                 Log.info("Improve: no selection captured")
+                self.improveInFlight = false
                 return
             }
             OllamaCleaner.applyCommand(
                 instruction: OllamaCleaner.improveInstruction,
                 to: selection
             ) { [weak self] result in
+                defer { self?.improveInFlight = false }
                 switch result {
                 case .success(let improved) where !improved.isEmpty:
                     self?.injector.inject(improved)

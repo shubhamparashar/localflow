@@ -4,9 +4,7 @@ import Foundation
 /// whisper and the cleanup LLM should spell exactly. One term per line;
 /// lines starting with # are comments.
 enum Glossary {
-    static var fileURL: URL {
-        Log.dir.appendingPathComponent("glossary.txt")
-    }
+    static var fileURL: URL = Log.dir.appendingPathComponent("glossary.txt")
 
     static func terms() -> [String] {
         guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return [] }

@@ -15,5 +15,10 @@ let package = Package(
             ],
             path: "Sources/LocalFlow"
         ),
+        .testTarget(
+            name: "LocalFlowTests",
+            dependencies: ["LocalFlow"],
+            path: "Tests/LocalFlowTests"
+        ),
     ]
 )

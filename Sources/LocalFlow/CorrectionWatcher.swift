@@ -9,7 +9,7 @@ import ApplicationServices
 final class CorrectionWatcher {
     static let shared = CorrectionWatcher()
 
-    static let suggestionsFile: URL = Log.dir.appendingPathComponent("glossary-suggestions.txt")
+    static var suggestionsFile: URL = Log.dir.appendingPathComponent("glossary-suggestions.txt")
 
     private struct Snapshot {
         let pastedText: String
@@ -151,8 +151,17 @@ final class CorrectionWatcher {
 
     private static func promoteToGlossary(_ term: String) {
         Glossary.ensureFileExists()
-        if let handle = try? FileHandle(forWritingTo: Glossary.fileURL) {
-            handle.seekToEndOfFile()
+        if let handle = try? FileHandle(forUpdating: Glossary.fileURL) {
+            let end = handle.seekToEndOfFile()
+            // A file whose last line lacks a trailing newline would glue the
+            // appended term onto that line (and a #-comment would swallow it).
+            if end > 0 {
+                handle.seek(toFileOffset: end - 1)
+                let lastByte = handle.readData(ofLength: 1)
+                if lastByte != Data("\n".utf8) {
+                    handle.write(Data("\n".utf8))
+                }
+            }
             handle.write(Data("\(term)\n".utf8))
             try? handle.close()
             Log.info("Auto-learned glossary term: \(term)")

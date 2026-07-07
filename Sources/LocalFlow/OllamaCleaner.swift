@@ -118,31 +118,36 @@ enum OllamaCleaner {
         chat(system: system, user: user, timeout: 20, maxTokens: cleanupMaxTokens) { result in
             switch result {
             case .success(let cleaned) where !cleaned.isEmpty:
-                // Structural guard against "responder mode": a faithful
-                // cleanup can only shrink or barely grow the text. Anything
-                // outside that band means the model answered the content.
-                let ratio = Double(cleaned.count) / Double(raw.count)
-                guard ratio <= 1.4 && ratio >= 0.4 else {
-                    Log.error("Cleanup rejected (length ratio \(String(format: "%.2f", ratio))) — using raw transcript")
+                guard guardsAccept(raw: raw, cleaned: cleaned) else {
                     completion(raw)
                     return
                 }
-                // Second guard: a faithful cleanup keeps most of the
-                // speaker's words. Low overlap means the model rewrote or
-                // answered the content — length alone can't catch that.
-                let overlap = wordOverlap(raw: raw, cleaned: cleaned)
-                guard overlap >= 0.5 else {
-                    Log.error("Cleanup rejected (word overlap \(String(format: "%.2f", overlap))) — using raw transcript")
-                    completion(raw)
-                    return
-                }
-                Log.info("Ollama cleanup applied (\(raw.count) → \(cleaned.count) chars, overlap \(String(format: "%.2f", overlap)))")
+                Log.info("Ollama cleanup applied (\(raw.count) → \(cleaned.count) chars)")
                 completion(cleaned)
             default:
                 Log.info("Ollama cleanup unavailable, using raw transcript")
                 completion(raw)
             }
         }
+    }
+
+    /// Structural guards against "responder mode": a faithful cleanup can
+    /// only shrink or barely grow the text (length ratio 0.4–1.4×) and must
+    /// keep most of the speaker's content words (overlap ≥ 0.5). Anything
+    /// outside those bands means the model answered the content instead of
+    /// cleaning it.
+    static func guardsAccept(raw: String, cleaned: String) -> Bool {
+        let ratio = Double(cleaned.count) / Double(raw.count)
+        guard ratio <= 1.4 && ratio >= 0.4 else {
+            Log.error("Cleanup rejected (length ratio \(String(format: "%.2f", ratio))) — using raw transcript")
+            return false
+        }
+        let overlap = wordOverlap(raw: raw, cleaned: cleaned)
+        guard overlap >= 0.5 else {
+            Log.error("Cleanup rejected (word overlap \(String(format: "%.2f", overlap))) — using raw transcript")
+            return false
+        }
+        return true
     }
 
     /// Applies a spoken instruction to selected text (command mode).

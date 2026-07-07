@@ -17,9 +17,7 @@ enum SnippetsEngine {
         let snippets: [Snippet]
     }
 
-    static var fileURL: URL {
-        Log.dir.appendingPathComponent("snippets.json")
-    }
+    static var fileURL: URL = Log.dir.appendingPathComponent("snippets.json")
 
     private static var cachedSnippets: [Snippet] = []
     private static var cachedModificationDate: Date?
