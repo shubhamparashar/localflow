@@ -131,4 +131,22 @@ final class PureLogicTests {
         #expect(CorrectionWatcher.editDistance("same", "same") == 0)
         #expect(CorrectionWatcher.editDistance("abcdefgh", "xyz") == Int.max)
     }
+
+    // MARK: - Quiet mode recording profile
+
+    @Test func normalProfileMatchesBaselineParameters() {
+        let profile = AudioRecorder.recordingProfile(quietModeEnabled: false)
+        #expect(profile.gain == 1.0)
+        #expect(profile.vadOffsetDb == 12)
+        #expect(profile.vadFloorDb == -55)
+    }
+
+    @Test func quietProfileBoostsGainAndLowersVadThreshold() {
+        let normal = AudioRecorder.recordingProfile(quietModeEnabled: false)
+        let quiet = AudioRecorder.recordingProfile(quietModeEnabled: true)
+        #expect(quiet.gain > normal.gain * 1.4)
+        #expect(quiet.gain < normal.gain * 2.1)
+        #expect(quiet.vadOffsetDb < normal.vadOffsetDb)
+        #expect(quiet.vadFloorDb < normal.vadFloorDb)
+    }
 }

@@ -613,6 +613,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startSound.state = Config.playStartSound ? .on : .off
         menu.addItem(startSound)
 
+        let quietMode = NSMenuItem(
+            title: "Quiet Mode (boost quiet/whispered speech)",
+            action: #selector(toggleQuietMode),
+            keyEquivalent: ""
+        )
+        quietMode.target = self
+        quietMode.state = Config.quietModeEnabled ? .on : .off
+        menu.addItem(quietMode)
+
         let loginItem = NSMenuItem(
             title: "Start at Login",
             action: #selector(toggleLoginItem),
@@ -694,6 +703,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleStartSound() {
         Config.playStartSound.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func toggleQuietMode() {
+        Config.quietModeEnabled.toggle()
         rebuildMenu()
     }
 
