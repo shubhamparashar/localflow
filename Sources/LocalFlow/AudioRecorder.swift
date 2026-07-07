@@ -31,6 +31,28 @@ final class AudioRecorder {
     private static let noSpeechTimeout: TimeInterval = 10
     private static let maxHandsFreeDuration: TimeInterval = 90
 
+    /// Input gain multiplier and VAD speech-threshold offset (added to the
+    /// adaptive noise floor) for normal vs. quiet/whispered speech. Quiet
+    /// mode boosts gain ~1.75x and lowers the offset/floor so soft speech
+    /// still crosses the threshold.
+    private static let normalGain: Float = 1.0
+    private static let normalVadOffsetDb: Float = 12
+    private static let normalVadFloorDb: Float = -55
+    private static let quietGain: Float = 1.75
+    private static let quietVadOffsetDb: Float = 6
+    private static let quietVadFloorDb: Float = -65
+
+    /// Pure profile selection, exposed for testing.
+    static func recordingProfile(quietModeEnabled: Bool) -> (gain: Float, vadOffsetDb: Float, vadFloorDb: Float) {
+        quietModeEnabled
+            ? (quietGain, quietVadOffsetDb, quietVadFloorDb)
+            : (normalGain, normalVadOffsetDb, normalVadFloorDb)
+    }
+
+    private var gain: Float = normalGain
+    private var vadOffsetDb: Float = normalVadOffsetDb
+    private var vadFloorDb: Float = normalVadFloorDb
+
     private static let targetSampleRate = 16000.0
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -61,6 +83,15 @@ final class AudioRecorder {
         lastSpeechAt = .distantPast
         noiseFloorDb = -70
         recordingStartedAt = Date()
+
+        let profile = Self.recordingProfile(quietModeEnabled: Config.quietModeEnabled)
+        gain = profile.gain
+        vadOffsetDb = profile.vadOffsetDb
+        vadFloorDb = profile.vadFloorDb
+        Log.info(
+            "Recording profile: \(Config.quietModeEnabled ? "quiet" : "normal") " +
+                "(gain \(gain), vad \(vadOffsetDb)/\(vadFloorDb))"
+        )
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
@@ -153,7 +184,10 @@ final class AudioRecorder {
             return
         }
         guard let channel = out.floatChannelData?[0], out.frameLength > 0 else { return }
-        let chunk = Array(UnsafeBufferPointer(start: channel, count: Int(out.frameLength)))
+        var chunk = Array(UnsafeBufferPointer(start: channel, count: Int(out.frameLength)))
+        if gain != 1.0 {
+            for i in chunk.indices { chunk[i] *= gain }
+        }
         sampleQueue.async { self.samples.append(contentsOf: chunk) }
         evaluateEndpoint(chunk)
     }
@@ -178,7 +212,7 @@ final class AudioRecorder {
         }
 
         let now = Date()
-        let speechThreshold = max(noiseFloorDb + 12, -55)
+        let speechThreshold = max(noiseFloorDb + vadOffsetDb, vadFloorDb)
         if levelDb > speechThreshold {
             speechDetected = true
             lastSpeechAt = now

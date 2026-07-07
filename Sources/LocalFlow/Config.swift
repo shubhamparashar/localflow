@@ -122,6 +122,14 @@ enum Config {
         set { defaults.set(newValue, forKey: "playStartSound") }
     }
 
+    /// Boosts input gain and lowers the VAD speech threshold for quiet or
+    /// whispered speech. Not a whisper-specific model — just a more
+    /// sensitive capture profile.
+    static var quietModeEnabled: Bool {
+        get { defaults.object(forKey: "quietModeEnabled") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "quietModeEnabled") }
+    }
+
     /// While `Date()` is before this, the idle Flow-Bar stays hidden (the
     /// "Hide for 1 hour" action); recording feedback still shows. Unset reads
     /// as the epoch, i.e. always in the past → visible.

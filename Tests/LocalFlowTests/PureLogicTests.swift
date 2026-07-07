@@ -183,4 +183,22 @@ final class PureLogicTests {
         #expect(Config.whisperLanguages.contains { $0.code == "fr" && $0.name == "French" })
         #expect(!Config.whisperLanguages.contains { $0.code == "hinglish" }, "pseudo-language is not a real whisper code")
     }
+
+    // MARK: - Quiet mode recording profile
+
+    @Test func normalProfileMatchesBaselineParameters() {
+        let profile = AudioRecorder.recordingProfile(quietModeEnabled: false)
+        #expect(profile.gain == 1.0)
+        #expect(profile.vadOffsetDb == 12)
+        #expect(profile.vadFloorDb == -55)
+    }
+
+    @Test func quietProfileBoostsGainAndLowersVadThreshold() {
+        let normal = AudioRecorder.recordingProfile(quietModeEnabled: false)
+        let quiet = AudioRecorder.recordingProfile(quietModeEnabled: true)
+        #expect(quiet.gain > normal.gain * 1.4)
+        #expect(quiet.gain < normal.gain * 2.1)
+        #expect(quiet.vadOffsetDb < normal.vadOffsetDb)
+        #expect(quiet.vadFloorDb < normal.vadFloorDb)
+    }
 }
