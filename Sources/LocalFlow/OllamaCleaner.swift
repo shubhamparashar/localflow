@@ -39,6 +39,7 @@ enum OllamaCleaner {
     static func clean(
         _ raw: String,
         profile: AppCategoryProfile? = nil,
+        fieldContext: String? = nil,
         completion: @escaping (String) -> Void
     ) {
         guard Config.cleanupEnabled, Config.cleanupLevel != .none,
@@ -48,7 +49,7 @@ enum OllamaCleaner {
             return
         }
         if raw.count <= listFormattingMaxLength {
-            cleanWindow(raw, profile: profile, allowLists: true, completion: completion)
+            cleanWindow(raw, profile: profile, fieldContext: fieldContext, allowLists: true, completion: completion)
             return
         }
         // Long takes are cleaned in sentence-boundary windows: each
@@ -56,7 +57,7 @@ enum OllamaCleaner {
         // instead of restructuring, and the guards act per window.
         let windows = sentenceWindows(raw, maxLength: listFormattingMaxLength)
         Log.info("Long take: cleanup in \(windows.count) sentence windows")
-        cleanWindows(windows, profile: profile, accumulated: []) { parts in
+        cleanWindows(windows, profile: profile, fieldContext: fieldContext, accumulated: []) { parts in
             completion(parts.joined(separator: " "))
         }
     }
@@ -90,6 +91,7 @@ enum OllamaCleaner {
     private static func cleanWindows(
         _ remaining: [String],
         profile: AppCategoryProfile?,
+        fieldContext: String?,
         accumulated: [String],
         completion: @escaping ([String]) -> Void
     ) {
@@ -99,17 +101,18 @@ enum OllamaCleaner {
         }
         let rest = Array(remaining.dropFirst())
         guard next.count >= minimumLength else {
-            cleanWindows(rest, profile: profile, accumulated: accumulated + [next], completion: completion)
+            cleanWindows(rest, profile: profile, fieldContext: fieldContext, accumulated: accumulated + [next], completion: completion)
             return
         }
-        cleanWindow(next, profile: profile, allowLists: false) { cleaned in
-            cleanWindows(rest, profile: profile, accumulated: accumulated + [cleaned], completion: completion)
+        cleanWindow(next, profile: profile, fieldContext: fieldContext, allowLists: false) { cleaned in
+            cleanWindows(rest, profile: profile, fieldContext: fieldContext, accumulated: accumulated + [cleaned], completion: completion)
         }
     }
 
     private static func cleanWindow(
         _ raw: String,
         profile: AppCategoryProfile?,
+        fieldContext: String? = nil,
         allowLists: Bool,
         completion: @escaping (String) -> Void
     ) {
@@ -121,6 +124,9 @@ enum OllamaCleaner {
         )
         if let tone = profile?.toneInstruction, !tone.isEmpty {
             system += "\nTarget context: \(tone)"
+        }
+        if let fieldContext, !fieldContext.isEmpty {
+            system += "\n\nContext already in the user's document (for spelling/proper nouns only, do NOT include it in the output):\n\(fieldContext)"
         }
         let user = "<transcript>\n\(raw)\n</transcript>"
         chat(system: system, user: user, timeout: 20, maxTokens: cleanupMaxTokens) { result in
