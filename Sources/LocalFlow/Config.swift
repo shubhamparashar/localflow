@@ -13,6 +13,33 @@ enum HotkeyChoice: String, CaseIterable {
     }
 }
 
+/// How aggressively `OllamaCleaner` rewrites a transcript. `none` skips
+/// Ollama entirely; `medium` is the historical default behavior.
+enum CleanupLevel: String, CaseIterable {
+    case none
+    case light
+    case medium
+    case high
+
+    var displayName: String {
+        switch self {
+        case .none: return "Off (raw text)"
+        case .light: return "Light (punctuation + fillers)"
+        case .medium: return "Medium (default)"
+        case .high: return "High (grammar + tone)"
+        }
+    }
+}
+
+/// Style variant layered on top of `CleanupLevel`, selectable per app
+/// category (`AppCategoryProfile.styleOverride`). `nil` on a category means
+/// "use the global default" — there is no free-standing global style.
+enum CleanupStyle: String, CaseIterable {
+    case formal
+    case casual
+    case code
+}
+
 enum Config {
     private static let defaults = UserDefaults.standard
 
@@ -39,6 +66,15 @@ enum Config {
     static var cleanupEnabled: Bool {
         get { defaults.object(forKey: "cleanupEnabled") as? Bool ?? false }
         set { defaults.set(newValue, forKey: "cleanupEnabled") }
+    }
+
+    /// Global default cleanup aggressiveness; `none` bypasses Ollama entirely.
+    static var cleanupLevel: CleanupLevel {
+        get {
+            let raw = defaults.string(forKey: "cleanupLevel") ?? ""
+            return CleanupLevel(rawValue: raw) ?? .medium
+        }
+        set { defaults.set(newValue.rawValue, forKey: "cleanupLevel") }
     }
 
     static var ollamaModel: String {
