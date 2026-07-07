@@ -24,6 +24,8 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>LocalFlow records audio while you hold the dictation hotkey and transcribes it entirely on-device.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>LocalFlow can import names from your contacts to improve dictation accuracy for proper nouns.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>CFBundleURLTypes</key>

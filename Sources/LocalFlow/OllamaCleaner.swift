@@ -336,7 +336,7 @@ enum OllamaCleaner {
     /// Loads the model into memory ahead of the first dictation so the
     /// first cleanup doesn't pay the multi-second cold-load.
     static func warmUp() {
-        guard Config.cleanupEnabled else { return }
+        guard Config.cleanupEnabled, Config.cleanupLevel != .none else { return }
         chat(system: "Reply with OK.", user: "OK", timeout: 60, maxTokens: 8) { _ in
             Log.info("Ollama model warmed up")
         }

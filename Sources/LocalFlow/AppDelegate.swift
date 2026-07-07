@@ -26,7 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         didSet { updateStatusIcon() }
     }
 
+    private var whisperKeepAliveTimer: Timer?
+
     private var pressStartedAt: Date?
+    private var dictationStartedAt: Date?
     private var handsFreeArmed = false
     private var sessionIsCommand = false
     private var commandSelection: String?
@@ -71,8 +74,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ParakeetTranscriber.shared.prepare { [weak self] ready in
                 Log.info("Parakeet engine ready: \(ready)")
                 self?.rebuildMenu()
+                if ready { ParakeetTranscriber.shared.preWarm() }
             }
         }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            ParakeetTranscriber.shared.preWarm()
+        }
+        startWhisperKeepAliveTimer()
 
         recorder.onAutoStop = { [weak self] in
             guard let self, self.handsFreeArmed else { return }
@@ -123,6 +135,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         server.stop()
+    }
+
+    /// Pings whisper-server's health endpoint every 5 minutes so it stays
+    /// resident (avoiding a cold model reload) whenever it's the active
+    /// engine — i.e. whenever Parakeet isn't handling the configured language.
+    private func startWhisperKeepAliveTimer() {
+        whisperKeepAliveTimer = Timer.scheduledTimer(withTimeInterval: 5 * 60, repeats: true) { [weak self] _ in
+            let decision = TranscriptionRouter.route(
+                language: Config.whisperLanguage,
+                parakeetReady: ParakeetTranscriber.shared.isReady
+            )
+            guard decision.engine == .whisper else { return }
+            self?.server.checkHealth { _ in }
+        }
     }
 
     /// Fired when the user opens the app while it's already running — the
@@ -195,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyPerAppLanguageMemory()
         sessionFieldContext = FieldContext.capture()
         partialCaptionRunner.cancel()
+        OllamaCleaner.warmUp()
         do {
             try recorder.start()
             state = .recording

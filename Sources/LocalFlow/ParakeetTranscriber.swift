@@ -72,6 +72,23 @@ final class ParakeetTranscriber {
         }
     }
 
+    /// ~0.5s of silence at 16kHz — enough to push a real inference through
+    /// the model so CoreML's slow first-inference cost lands here instead of
+    /// on the user's first take.
+    private static let preWarmSamples = 8_000
+
+    /// Runs a throwaway inference through the loaded model. Safe to call
+    /// repeatedly (e.g. after every wake); a no-op until `isReady`.
+    func preWarm() {
+        guard isReady else { return }
+        let silence = [Float](repeating: 0, count: Self.preWarmSamples)
+        let started = Date()
+        transcribe(samples: silence) { _ in
+            let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+            Log.info("Parakeet pre-warmed in \(elapsed)s")
+        }
+    }
+
     // MARK: - Engine
 
     private func loadEngine() {
