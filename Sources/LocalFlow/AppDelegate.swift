@@ -221,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyPerAppLanguageMemory()
         sessionFieldContext = FieldContext.capture()
         partialCaptionRunner.cancel()
+        OllamaCleaner.warmUp()
         do {
             try recorder.start()
             state = .recording
@@ -250,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func endDictation() {
         guard state == .recording, !stopScheduled else { return }
+        dictationStartedAt = Date()
         stopScheduled = true
         partialCaptionRunner.cancel()
         // Wait for the speaker to actually pause (up to 1.5 s) so a key
@@ -339,6 +341,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         final = SnippetsEngine.apply(final)
                         self.injector.inject(final)
                         CorrectionWatcher.shared.recordInjection(final)
+                        let cleanupSeconds: Double? = willClean ? Date().timeIntervalSince(cleanupStarted) : nil
+                        let totalLatencySec: Double? = self.dictationStartedAt.map { Date().timeIntervalSince($0) }
+                        if let totalLatencySec {
+                            Log.info(
+                                "Take latency: \(String(format: "%.2f", totalLatencySec))s " +
+                                    "(stt \(String(format: "%.2f", sttSeconds))s, " +
+                                    "cleanup \(String(format: "%.2f", cleanupSeconds ?? 0))s)"
+                            )
+                        }
                         let record = DictationRecord(
                             ts: Date(),
                             durationSec: self.recorder.lastDurationSec,
@@ -346,10 +357,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             finalWords: Self.wordCount(final),
                             mode: mode,
                             sttSeconds: sttSeconds,
-                            cleanupSeconds: willClean ? Date().timeIntervalSince(cleanupStarted) : nil,
+                            cleanupSeconds: cleanupSeconds,
                             rawText: text,
                             finalText: final,
-                            app: profile?.category
+                            app: profile?.category,
+                            totalLatencySec: totalLatencySec
                         )
                         VoiceProfileStore.record(record)
                     }
