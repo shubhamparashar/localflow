@@ -133,6 +133,71 @@ enum Config {
         ("yue", "Cantonese"),
     ]
 
+    /// Most-recently-used language codes, most-recent-first, deduped, capped
+    /// at 3. Feeds the Flow-Bar pill's quick-switch menu and badge cycling.
+    /// Only `setLanguage` should mutate this — every surface that changes the
+    /// active language routes through it so recents stay consistent.
+    static var languageRecents: [String] {
+        get { defaults.stringArray(forKey: "languageRecents") ?? [] }
+        set { defaults.set(newValue, forKey: "languageRecents") }
+    }
+
+    /// Single choke point for changing the active language: updates
+    /// `whisperLanguage` and folds the choice into `languageRecents`.
+    static func setLanguage(_ code: String) {
+        whisperLanguage = code
+        languageRecents = updatedRecents(languageRecents, selecting: code)
+    }
+
+    /// Pure dedupe/reorder/cap logic for `languageRecents`, extracted for testing.
+    static func updatedRecents(_ recents: [String], selecting code: String, cap: Int = 3) -> [String] {
+        var updated = recents.filter { $0 != code }
+        updated.insert(code, at: 0)
+        if updated.count > cap {
+            updated.removeLast(updated.count - cap)
+        }
+        return updated
+    }
+
+    /// Pure cycling logic for badge clicks: the language after `current` in
+    /// `recents`, wrapping around. Falls back to `current` when there's
+    /// nothing to cycle through yet.
+    static func nextLanguage(after current: String, in recents: [String]) -> String {
+        guard !recents.isEmpty else { return current }
+        if let index = recents.firstIndex(of: current) {
+            return recents[(index + 1) % recents.count]
+        }
+        return recents[0]
+    }
+
+    /// Short badge shown on the idle Flow-Bar pill for the active language.
+    static func languageBadge(for code: String) -> String {
+        switch code {
+        case "auto": return "A"
+        case "hinglish": return "HG"
+        default: return String(code.uppercased().prefix(2))
+        }
+    }
+
+    /// Per-app language memory, off by default: remembers the last language
+    /// used per frontmost-app bundle id and auto-switches at dictation start.
+    static var perAppLanguageEnabled: Bool {
+        get { defaults.bool(forKey: "perAppLanguageEnabled") }
+        set { defaults.set(newValue, forKey: "perAppLanguageEnabled") }
+    }
+
+    static var perAppLanguageMap: [String: String] {
+        get { defaults.dictionary(forKey: "perAppLanguageMap") as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: "perAppLanguageMap") }
+    }
+
+    /// Pure decision: the language (if any) dictation should switch to for
+    /// `bundleId`, given whether per-app memory is enabled.
+    static func perAppLanguage(enabled: Bool, map: [String: String], bundleId: String?) -> String? {
+        guard enabled, let bundleId else { return nil }
+        return map[bundleId]
+    }
+
     static var handsFreeEnabled: Bool {
         get { defaults.object(forKey: "handsFreeEnabled") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "handsFreeEnabled") }

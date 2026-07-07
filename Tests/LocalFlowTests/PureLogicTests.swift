@@ -281,6 +281,54 @@ final class PureLogicTests {
         #expect(quiet.vadFloorDb < normal.vadFloorDb)
     }
 
+    // MARK: - Language recents / badge / per-app memory
+
+    @Test func recentsAddsNewCodeToFront() {
+        #expect(Config.updatedRecents([], selecting: "en") == ["en"])
+        #expect(Config.updatedRecents(["en"], selecting: "fr") == ["fr", "en"])
+    }
+
+    @Test func recentsDedupesExistingCode() {
+        #expect(Config.updatedRecents(["en", "fr", "hi"], selecting: "fr") == ["fr", "en", "hi"])
+    }
+
+    @Test func recentsCapsAtThree() {
+        #expect(Config.updatedRecents(["en", "fr", "hi"], selecting: "auto") == ["auto", "en", "fr"])
+    }
+
+    @Test func nextLanguageWrapsAroundRecents() {
+        #expect(Config.nextLanguage(after: "en", in: ["en", "fr", "hi"]) == "fr")
+        #expect(Config.nextLanguage(after: "hi", in: ["en", "fr", "hi"]) == "en")
+    }
+
+    @Test func nextLanguageFallsBackWhenCurrentNotInRecents() {
+        #expect(Config.nextLanguage(after: "auto", in: ["en", "fr"]) == "en")
+    }
+
+    @Test func nextLanguageNoOpWhenRecentsEmpty() {
+        #expect(Config.nextLanguage(after: "en", in: []) == "en")
+    }
+
+    @Test func languageBadgeDerivation() {
+        #expect(Config.languageBadge(for: "en") == "EN")
+        #expect(Config.languageBadge(for: "auto") == "A")
+        #expect(Config.languageBadge(for: "hinglish") == "HG")
+        #expect(Config.languageBadge(for: "fr") == "FR")
+    }
+
+    @Test func perAppLanguageDisabledReturnsNil() {
+        #expect(Config.perAppLanguage(enabled: false, map: ["com.apple.mail": "fr"], bundleId: "com.apple.mail") == nil)
+    }
+
+    @Test func perAppLanguageMissingBundleReturnsNil() {
+        #expect(Config.perAppLanguage(enabled: true, map: ["com.apple.mail": "fr"], bundleId: nil) == nil)
+        #expect(Config.perAppLanguage(enabled: true, map: [:], bundleId: "com.apple.mail") == nil)
+    }
+
+    @Test func perAppLanguageEnabledReturnsRememberedCode() {
+        #expect(Config.perAppLanguage(enabled: true, map: ["com.apple.mail": "fr"], bundleId: "com.apple.mail") == "fr")
+    }
+
     // MARK: - Partial-caption tick scheduler
 
     @Test func partialTickSkipsBeforeThreshold() {

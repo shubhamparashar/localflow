@@ -88,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.onToggle = { [weak self] in self?.toggleDictationFromHUD() }
         hud.onHideForOneHour = { [weak self] in self?.hideHUDForOneHour() }
         hud.onQuit = { NSApp.terminate(nil) }
+        hud.onSelectLanguage = { [weak self] code in self?.selectLanguageFromPill(code) }
+        hud.moreLanguagesMenuProvider = { [weak self] in self?.buildMoreLanguagesMenu() ?? NSMenu() }
         settings.onChanged = { [weak self] in
             self?.rebuildMenu()
             self?.refreshIdleHUD()
@@ -183,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CorrectionWatcher.shared.checkPending()
         // Captured at press time: the app the user is dictating into.
         sessionProfile = AppContext.currentProfile()
+        applyPerAppLanguageMemory()
         partialCaptionRunner.cancel()
         do {
             try recorder.start()
@@ -193,6 +196,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Log.error("Failed to start recording: \(error.localizedDescription)")
         }
+    }
+
+    /// When per-app language memory is on: switches to the frontmost app's
+    /// remembered language (if different), then records whichever language
+    /// ends up active back against that app for next time.
+    private func applyPerAppLanguageMemory() {
+        guard Config.perAppLanguageEnabled, let bundleId = AppContext.frontmostBundleId() else { return }
+        if let remembered = Config.perAppLanguage(enabled: true, map: Config.perAppLanguageMap, bundleId: bundleId),
+           remembered != Config.whisperLanguage {
+            applyLanguageSelection(remembered)
+        }
+        var map = Config.perAppLanguageMap
+        map[bundleId] = Config.whisperLanguage
+        Config.perAppLanguageMap = map
     }
 
     private var stopScheduled = false
@@ -605,17 +622,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             languageMenu.addItem(item)
         }
         languageMenu.addItem(.separator())
-        let moreMenu = NSMenu()
-        for entry in Config.whisperLanguages where entry.code != "en" && entry.code != "hi" {
-            let item = NSMenuItem(title: entry.name, action: #selector(selectLanguage(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = entry.code
-            item.state = Config.whisperLanguage == entry.code ? .on : .off
-            moreMenu.addItem(item)
-        }
         let moreRoot = NSMenuItem(title: "More Languages", action: nil, keyEquivalent: "")
         languageMenu.addItem(moreRoot)
-        languageMenu.setSubmenu(moreMenu, for: moreRoot)
+        languageMenu.setSubmenu(buildMoreLanguagesMenu(), for: moreRoot)
         let languageRoot = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
         menu.addItem(languageRoot)
         menu.setSubmenu(languageMenu, for: languageRoot)
@@ -637,6 +646,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showHUD.target = self
         showHUD.state = Config.showIdleHUD ? .on : .off
         menu.addItem(showHUD)
+
+        let perAppLanguage = NSMenuItem(
+            title: "Remember Language per App",
+            action: #selector(togglePerAppLanguage),
+            keyEquivalent: ""
+        )
+        perAppLanguage.target = self
+        perAppLanguage.state = Config.perAppLanguageEnabled ? .on : .off
+        menu.addItem(perAppLanguage)
 
         let startSound = NSMenuItem(
             title: "Start Sound",
@@ -795,8 +813,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func selectLanguage(_ sender: NSMenuItem) {
         guard let code = sender.representedObject as? String else { return }
-        Config.whisperLanguage = code
+        applyLanguageSelection(code)
         Log.info("Language set to \(code)")
+    }
+
+    /// The Flow-Bar pill's Language submenu and badge-cycling route here
+    /// instead of duplicating the status-bar menu's selection logic.
+    private func selectLanguageFromPill(_ code: String) {
+        applyLanguageSelection(code)
+        Log.info("Language switched to \(code) (via pill)")
+    }
+
+    private func applyLanguageSelection(_ code: String) {
+        Config.setLanguage(code)
         if code == "en", !ParakeetTranscriber.shared.isReady {
             ParakeetTranscriber.shared.prepare { [weak self] ready in
                 Log.info("Parakeet engine ready: \(ready)")
@@ -804,6 +833,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         rebuildMenu()
+        refreshIdleHUD()
+    }
+
+    @objc private func togglePerAppLanguage() {
+        Config.perAppLanguageEnabled.toggle()
+        rebuildMenu()
+    }
+
+    /// "More Languages" submenu shared by the status-bar menu and the
+    /// Flow-Bar pill's context menu.
+    private func buildMoreLanguagesMenu() -> NSMenu {
+        let moreMenu = NSMenu()
+        for entry in Config.whisperLanguages where entry.code != "en" && entry.code != "hi" {
+            let item = NSMenuItem(title: entry.name, action: #selector(selectLanguage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.code
+            item.state = Config.whisperLanguage == entry.code ? .on : .off
+            moreMenu.addItem(item)
+        }
+        return moreMenu
     }
 
     @objc private func toggleLoginItem() {

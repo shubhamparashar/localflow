@@ -24,6 +24,11 @@ private final class HUDContentView: NSVisualEffectView {
     var menuProvider: (() -> NSMenu?)?
     /// Fires with the pill's new center (screen coords) once a drag settles.
     var onDragEnded: ((CGPoint) -> Void)?
+    /// Fires when a click lands inside `badgeHitFrame` instead of toggling dictation.
+    var onBadgeClick: (() -> Void)?
+    /// The language badge's frame in this view's coordinates, updated by layout.
+    /// `nil` (or a click outside it) falls through to the plain-pill toggle.
+    var badgeHitFrame: NSRect?
     /// Fires true when a drag begins and false when it ends, so the HUD can stop
     /// repositioning the pill (e.g. on an idle→recording change) mid-drag.
     var onDragStateChanged: ((Bool) -> Void)?
@@ -112,6 +117,10 @@ private final class HUDContentView: NSVisualEffectView {
             return
         }
         let local = convert(event.locationInWindow, from: nil)
+        if let badgeHitFrame, badgeHitFrame.contains(local) {
+            onBadgeClick?()
+            return
+        }
         if bounds.contains(local) { onClick?() }
     }
 
@@ -161,6 +170,13 @@ final class OverlayHUD: NSObject {
     var onToggle: (() -> Void)?
     var onHideForOneHour: (() -> Void)?
     var onQuit: (() -> Void)?
+    /// Fires with a whisper language code when the pill's Language submenu or
+    /// badge-click cycling picks one; the app applies it the same way the
+    /// status-bar menu would (Parakeet prepare, recents, badge refresh).
+    var onSelectLanguage: ((String) -> Void)?
+    /// Supplies the "More Languages" submenu content, shared with the
+    /// status-bar menu so the two surfaces don't diverge.
+    var moreLanguagesMenuProvider: (() -> NSMenu)?
 
     // MARK: - State
 
@@ -169,6 +185,7 @@ final class OverlayHUD: NSObject {
     private var iconView: NSImageView!
     private var textLabel: NSTextField!
     private var elapsedLabel: NSTextField!
+    private var badgeLabel: NSTextField!
     private var barViews: [NSView] = []
     private var elapsedTimer: Timer?
     private var recordingStartedAt: Date?
@@ -318,6 +335,7 @@ final class OverlayHUD: NSObject {
         effect.menuProvider = { [weak self] in self?.buildContextMenu() }
         effect.onDragEnded = { [weak self] center in self?.handleDragEnded(center) }
         effect.onDragStateChanged = { [weak self] dragging in self?.isDraggingPill = dragging }
+        effect.onBadgeClick = { [weak self] in self?.cycleLanguageBadge() }
 
         iconView = NSImageView(frame: .zero)
         iconView.imageScaling = .scaleProportionallyUpOrDown
@@ -333,6 +351,12 @@ final class OverlayHUD: NSObject {
         elapsedLabel.textColor = NSColor.white.withAlphaComponent(0.7)
         elapsedLabel.alignment = .right
         effect.addSubview(elapsedLabel)
+
+        badgeLabel = NSTextField(labelWithString: "")
+        badgeLabel.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        badgeLabel.textColor = NSColor.white.withAlphaComponent(0.75)
+        badgeLabel.alignment = .center
+        effect.addSubview(badgeLabel)
 
         barViews = (0..<Self.barCount).map { (_: Int) -> NSView in
             let bar: NSView = NSView(frame: .zero)
@@ -379,6 +403,10 @@ final class OverlayHUD: NSObject {
             menu.addItem(resetItem)
             menu.addItem(.separator())
         }
+        let languageRoot: NSMenuItem = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
+        menu.addItem(languageRoot)
+        menu.setSubmenu(buildLanguageMenu(), for: languageRoot)
+        menu.addItem(.separator())
         let hideItem: NSMenuItem = NSMenuItem(
             title: "Hide Flow-Bar for 1 hour",
             action: #selector(menuHideForOneHour),
@@ -400,8 +428,54 @@ final class OverlayHUD: NSObject {
     @objc private func menuHideForOneHour() { onHideForOneHour?() }
     @objc private func menuQuit() { onQuit?() }
     @objc private func menuResetPosition() { resetPosition() }
+    @objc private func menuSelectLanguage(_ sender: NSMenuItem) {
+        guard let code = sender.representedObject as? String else { return }
+        onSelectLanguage?(code)
+    }
+
+    /// The 3 most recent languages + Auto, then a "More Languages" submenu
+    /// (supplied by `moreLanguagesMenuProvider`) for everything else.
+    private func buildLanguageMenu() -> NSMenu {
+        let sub: NSMenu = NSMenu()
+        var codes: [String] = Array(Config.languageRecents.prefix(3))
+        if !codes.contains("auto") {
+            codes.append("auto")
+        }
+        for code in codes {
+            let item: NSMenuItem = NSMenuItem(
+                title: languageDisplayName(code),
+                action: #selector(menuSelectLanguage(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = code
+            item.state = Config.whisperLanguage == code ? .on : .off
+            sub.addItem(item)
+        }
+        sub.addItem(.separator())
+        let moreRoot: NSMenuItem = NSMenuItem(title: "More Languages", action: nil, keyEquivalent: "")
+        sub.addItem(moreRoot)
+        sub.setSubmenu(moreLanguagesMenuProvider?() ?? NSMenu(), for: moreRoot)
+        return sub
+    }
+
+    private func languageDisplayName(_ code: String) -> String {
+        switch code {
+        case "auto": return "Auto-detect"
+        case "hinglish": return "Hinglish (Roman mix)"
+        default: return Config.whisperLanguages.first { $0.code == code }?.name ?? code.uppercased()
+        }
+    }
 
     // MARK: - Hover
+
+    /// Advances the active language to the next entry in `languageRecents`
+    /// (wrapping around) and reports it the same way the pill's Language
+    /// submenu would.
+    private func cycleLanguageBadge() {
+        let next: String = Config.nextLanguage(after: Config.whisperLanguage, in: Config.languageRecents)
+        onSelectLanguage?(next)
+    }
 
     private func hoverChanged(_ hovering: Bool) {
         guard isHovering != hovering else { return }
@@ -486,6 +560,9 @@ final class OverlayHUD: NSObject {
         iconView.contentTintColor = iconColor
         textLabel.stringValue = showText ? text : ""
         textLabel.isHidden = !showText
+        let showBadge: Bool = isIdle(state)
+        badgeLabel.stringValue = showBadge ? Config.languageBadge(for: Config.whisperLanguage) : ""
+        badgeLabel.isHidden = !showBadge
     }
 
     private func isRecording(_ state: HUDState?) -> Bool {
@@ -515,8 +592,10 @@ final class OverlayHUD: NSObject {
     private func layoutContent() {
         textLabel.sizeToFit()
         elapsedLabel.sizeToFit()
+        badgeLabel.sizeToFit()
         let recording: Bool = isRecording(currentState)
         let showText: Bool = !textLabel.isHidden && !textLabel.stringValue.isEmpty
+        let showBadge: Bool = !badgeLabel.isHidden && !badgeLabel.stringValue.isEmpty
         let idleCollapsed: Bool = isIdle(currentState) && !showText
         let meterWidth: CGFloat = CGFloat(Self.barCount) * Self.barWidth + CGFloat(Self.barCount - 1) * Self.barSpacing
 
@@ -526,6 +605,9 @@ final class OverlayHUD: NSObject {
         }
         if recording {
             width += Self.elementGap + Self.elapsedWidth + Self.elementGap + meterWidth
+        }
+        if showBadge {
+            width += Self.elementGap + badgeLabel.frame.width
         }
         width += Self.horizontalPadding
         width = max(width, idleCollapsed ? Self.minIdleWidth : Self.minPillWidth)
@@ -542,14 +624,17 @@ final class OverlayHUD: NSObject {
 
         let midY: CGFloat = Self.pillHeight / 2
 
-        // Idle-collapsed pill is just a centered mic glyph.
+        // Idle-collapsed pill is just a centered mic glyph plus the badge.
         if idleCollapsed {
+            let iconWidth: CGFloat = showBadge ? Self.iconSize + Self.elementGap + badgeLabel.frame.width : Self.iconSize
+            let iconX: CGFloat = (width - iconWidth) / 2
             iconView.frame = NSRect(
-                x: (width - Self.iconSize) / 2,
+                x: iconX,
                 y: midY - Self.iconSize / 2,
                 width: Self.iconSize,
                 height: Self.iconSize
             )
+            layoutBadge(showBadge: showBadge, x: iconX + Self.iconSize + Self.elementGap, midY: midY)
             return
         }
 
@@ -571,6 +656,9 @@ final class OverlayHUD: NSObject {
             )
         }
 
+        let badgeX: CGFloat = width - Self.horizontalPadding - badgeLabel.frame.width
+        layoutBadge(showBadge: showBadge, x: badgeX, midY: midY)
+
         guard recording else { return }
         let meterX: CGFloat = width - Self.horizontalPadding - meterWidth
         for (index, bar) in barViews.enumerated() {
@@ -589,6 +677,19 @@ final class OverlayHUD: NSObject {
             width: Self.elapsedWidth,
             height: elapsedHeight
         )
+    }
+
+    /// Positions the language badge and updates the click hit-target the
+    /// content view checks before falling back to the plain-pill toggle.
+    /// Padded a few points beyond the visible glyph so it's easy to tap.
+    private func layoutBadge(showBadge: Bool, x: CGFloat, midY: CGFloat) {
+        guard showBadge else {
+            contentView.badgeHitFrame = nil
+            return
+        }
+        let height: CGFloat = badgeLabel.frame.height
+        badgeLabel.frame = NSRect(x: x, y: midY - height / 2, width: badgeLabel.frame.width, height: height)
+        contentView.badgeHitFrame = badgeLabel.frame.insetBy(dx: -6, dy: -6)
     }
 
     // MARK: - Positioning
