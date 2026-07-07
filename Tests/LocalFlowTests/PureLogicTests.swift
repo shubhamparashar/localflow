@@ -485,6 +485,60 @@ final class PureLogicTests {
         #expect(DictationRoute.decide(isCommand: false, isClaudePipe: false) == .normal)
     }
 
+    // MARK: - Snippet slots
+
+    @Test func fillSlotsSubstitutesClipboardAndDate() {
+        let date = Date(timeIntervalSince1970: 0)
+        let expected = DateFormatter()
+        expected.dateStyle = .medium
+        expected.timeStyle = .none
+        let result = SnippetsEngine.fillSlots(
+            expansion: "Paste: {clipboard} on {date}",
+            clipboard: "COPIED",
+            date: date
+        )
+        #expect(result.text == "Paste: COPIED on \(expected.string(from: date))")
+        #expect(result.cursorOffsetFromEnd == nil)
+    }
+
+    @Test func fillSlotsCursorMiddleReturnsOffsetFromEnd() {
+        let result = SnippetsEngine.fillSlots(expansion: "Hi {cursor}, bye", clipboard: "", date: Date())
+        #expect(result.text == "Hi , bye")
+        #expect(result.cursorOffsetFromEnd == 5)
+    }
+
+    @Test func fillSlotsCursorAtEndIsZeroAndAtStartIsFullLength() {
+        let end = SnippetsEngine.fillSlots(expansion: "done{cursor}", clipboard: "", date: Date())
+        #expect(end.text == "done")
+        #expect(end.cursorOffsetFromEnd == 0)
+        let start = SnippetsEngine.fillSlots(expansion: "{cursor}done", clipboard: "", date: Date())
+        #expect(start.text == "done")
+        #expect(start.cursorOffsetFromEnd == 4)
+    }
+
+    @Test func fillSlotsOnlyFirstCursorCountsAndNoPlaceholdersPassThrough() {
+        let multi = SnippetsEngine.fillSlots(expansion: "a{cursor}b{cursor}c", clipboard: "", date: Date())
+        #expect(multi.text == "abc")
+        #expect(multi.cursorOffsetFromEnd == 2)
+        let plain = SnippetsEngine.fillSlots(expansion: "no placeholders", clipboard: "x", date: Date())
+        #expect(plain.text == "no placeholders")
+        #expect(plain.cursorOffsetFromEnd == nil)
+    }
+
+    // MARK: - Capture mode
+
+    @Test func captureRouteAndPrecedence() {
+        #expect(DictationRoute.decide(isCommand: false, isClaudePipe: false, isCapture: true) == .capture)
+        #expect(DictationRoute.decide(isCommand: true, isClaudePipe: false, isCapture: true) == .command)
+        #expect(DictationRoute.decide(isCommand: false, isClaudePipe: true, isCapture: true) == .claudePipe)
+    }
+
+    @Test func captureRestartsOnlyWhileActiveAndForCaptureTakes() {
+        #expect(DictationRoute.shouldRestartCapture(captureActive: true, wasCapture: true))
+        #expect(!DictationRoute.shouldRestartCapture(captureActive: false, wasCapture: true))
+        #expect(!DictationRoute.shouldRestartCapture(captureActive: true, wasCapture: false))
+    }
+
     // MARK: - Redaction guard
 
     private func kinds(_ text: String) -> Set<String> {

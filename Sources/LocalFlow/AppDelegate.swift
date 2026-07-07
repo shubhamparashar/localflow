@@ -10,12 +10,21 @@ import ServiceManagement
 enum DictationRoute: Equatable {
     case command
     case claudePipe
+    case capture
     case normal
 
-    static func decide(isCommand: Bool, isClaudePipe: Bool) -> DictationRoute {
+    static func decide(isCommand: Bool, isClaudePipe: Bool, isCapture: Bool = false) -> DictationRoute {
         if isCommand { return .command }
         if isClaudePipe { return .claudePipe }
+        if isCapture { return .capture }
         return .normal
+    }
+
+    /// Whether a finished capture chunk should chain into the next take:
+    /// only while capture mode is still on and the finished take was itself
+    /// a capture take (a hotkey dictation mid-capture must not fork a loop).
+    static func shouldRestartCapture(captureActive: Bool, wasCapture: Bool) -> Bool {
+        captureActive && wasCapture
     }
 }
 
@@ -50,6 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var handsFreeArmed = false
     private var sessionIsCommand = false
     private var sessionIsClaudePipe = false
+    private var sessionIsCapture = false
+    private var captureModeActive = false
+    private var captureChunkCount = 0
+    private var captureEmptyStreak = 0
     private var commandSelection: String?
     private var lastRawTranscript: String?
     private var sessionProfile: AppCategoryProfile?
@@ -123,6 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.onSelectLanguage = { [weak self] code in self?.selectLanguageFromPill(code) }
         hud.moreLanguagesMenuProvider = { [weak self] in self?.buildMoreLanguagesMenu() ?? NSMenu() }
         hud.onDictateToClaude = { [weak self] in self?.startClaudePipeDictation() }
+        hud.onToggleCapture = { [weak self] in self?.toggleCaptureMode() }
+        hud.captureModeIsActive = { [weak self] in self?.captureModeActive ?? false }
         settings.onChanged = { [weak self] in
             self?.rebuildMenu()
             self?.refreshIdleHUD()
@@ -188,6 +203,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Hold = push-to-talk (release stops). Quick tap = hands-free: keep
     /// recording until VAD detects the utterance ended, or a second tap.
     private func hotkeyPressed() {
+        if captureModeActive {
+            // The hotkey is the panic button while capturing — end the loop.
+            setCaptureMode(false)
+            return
+        }
         if state == .recording && handsFreeArmed {
             endDictation()
             return
@@ -297,12 +317,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopScheduled = false
         let isCommand = sessionIsCommand
         let isClaudePipe = sessionIsClaudePipe
-        let mode = isCommand ? "command" : (isClaudePipe ? "claudePipe" : (handsFreeArmed ? "handsFree" : "hold"))
+        let isCapture = sessionIsCapture
+        let mode = isCommand ? "command"
+            : (isClaudePipe ? "claudePipe"
+                : (isCapture ? "capture" : (handsFreeArmed ? "handsFree" : "hold")))
         handsFreeArmed = false
         sessionIsCommand = false
         sessionIsClaudePipe = false
+        sessionIsCapture = false
         guard let wav else {
             state = .idle
+            maybeRestartCapture(wasCapture: isCapture, producedText: false)
             return
         }
         // Keep the most recent utterance on disk so transcription issues
@@ -318,14 +343,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.commandSelection = selection
                 Log.info("Command mode: selection \(selection.map { "\($0.count) chars" } ?? "none")")
-                self.transcribeAndRoute(wav, isCommand: true, isClaudePipe: false, mode: mode)
+                self.transcribeAndRoute(wav, isCommand: true, isClaudePipe: false, isCapture: false, mode: mode)
             }
         } else {
-            transcribeAndRoute(wav, isCommand: false, isClaudePipe: isClaudePipe, mode: mode)
+            transcribeAndRoute(wav, isCommand: false, isClaudePipe: isClaudePipe, isCapture: isCapture, mode: mode)
         }
     }
 
-    private func transcribeAndRoute(_ wav: Data, isCommand: Bool, isClaudePipe: Bool, mode: String) {
+    private func transcribeAndRoute(
+        _ wav: Data,
+        isCommand: Bool,
+        isClaudePipe: Bool,
+        isCapture: Bool = false,
+        mode: String
+    ) {
         let sttStarted = Date()
         let profile = sessionProfile
         let fieldContext = sessionFieldContext
@@ -337,13 +368,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .success(let text):
                 guard !text.isEmpty else {
                     Log.info("Empty transcript, nothing to inject")
+                    self.maybeRestartCapture(wasCapture: isCapture, producedText: false)
                     return
                 }
-                switch DictationRoute.decide(isCommand: isCommand, isClaudePipe: isClaudePipe) {
+                switch DictationRoute.decide(isCommand: isCommand, isClaudePipe: isClaudePipe, isCapture: isCapture) {
                 case .command:
                     self.runCommand(instruction: text)
                 case .claudePipe:
                     self.runClaudePipe(transcript: text)
+                case .capture:
+                    self.captureChunkCount += 1
+                    Log.info("Capture mode: chunk \(self.captureChunkCount) (\(text.count) chars)")
+                    self.scratchpad.append(text + "\n\n")
+                    self.maybeRestartCapture(wasCapture: true, producedText: true)
                 case .normal:
                     self.lastRawTranscript = text
                     let willClean = Config.cleanupEnabled
@@ -363,10 +400,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             final = String(final.dropLast())
                         }
                         final = SnippetsEngine.apply(final)
+                        // Snippet slots read the clipboard before inject()
+                        // overwrites it with the transcript itself.
+                        var cursorOffsetFromEnd: Int?
+                        if final.contains("{") {
+                            let clipboard = NSPasteboard.general.string(forType: .string) ?? ""
+                            let filled = SnippetsEngine.fillSlots(expansion: final, clipboard: clipboard, date: Date())
+                            final = filled.text
+                            cursorOffsetFromEnd = filled.cursorOffsetFromEnd
+                        }
                         if self.redactionBlocks(final, profile: profile) {
                             return
                         }
                         self.injector.inject(final)
+                        if let offset = cursorOffsetFromEnd, offset > 0 {
+                            let smartSpacePad = Config.smartSpacing && !final.hasSuffix(" ") ? 1 : 0
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                self.injector.moveCaretLeft(offset + smartSpacePad)
+                            }
+                        }
                         CorrectionWatcher.shared.recordInjection(final)
                         let cleanupSeconds: Double? = willClean ? Date().timeIntervalSince(cleanupStarted) : nil
                         let totalLatencySec: Double? = self.dictationStartedAt.map { Date().timeIntervalSince($0) }
@@ -394,9 +446,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             case .failure:
-                break
+                self.maybeRestartCapture(wasCapture: isCapture, producedText: false)
             }
         }
+    }
+
+    // MARK: - Capture mode (long-form notes into the Scratchpad)
+
+    /// Chains the next capture take while capture mode stays on. Three
+    /// consecutive fruitless takes (dead mic, silence) end the loop rather
+    /// than recording forever.
+    private func maybeRestartCapture(wasCapture: Bool, producedText: Bool) {
+        guard DictationRoute.shouldRestartCapture(captureActive: captureModeActive, wasCapture: wasCapture) else { return }
+        if producedText {
+            captureEmptyStreak = 0
+        } else {
+            captureEmptyStreak += 1
+            if captureEmptyStreak >= 3 {
+                Log.info("Capture mode: 3 empty takes in a row, stopping")
+                setCaptureMode(false)
+                return
+            }
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.startCaptureTake()
+        }
+    }
+
+    private func startCaptureTake() {
+        guard captureModeActive, state == .idle || state == .transcribing else { return }
+        handsFreeArmed = false
+        sessionIsCommand = false
+        sessionIsClaudePipe = false
+        sessionIsCapture = true
+        beginDictation()
+        if state == .recording {
+            handsFreeArmed = true
+            recorder.enableAutoStop()
+        } else {
+            sessionIsCapture = false
+        }
+    }
+
+    private func setCaptureMode(_ on: Bool) {
+        guard captureModeActive != on else { return }
+        captureModeActive = on
+        if on {
+            captureChunkCount = 0
+            captureEmptyStreak = 0
+            let time = Date().formatted(date: .omitted, time: .shortened)
+            scratchpad.append("— \(time) —\n")
+            scratchpad.show()
+            Log.info("Capture mode: started")
+            startCaptureTake()
+        } else {
+            Log.info("Capture mode: stopped after \(captureChunkCount) chunks")
+            if state == .recording, sessionIsCapture || handsFreeArmed {
+                endDictation()
+            }
+        }
+        rebuildMenu()
+    }
+
+    @objc private func toggleCaptureMode() {
+        setCaptureMode(!captureModeActive)
     }
 
     /// Redaction guard: if the final dictation looks like it contains a
@@ -682,6 +795,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dictateToClaude.target = self
             menu.addItem(dictateToClaude)
         }
+        let captureItem = NSMenuItem(
+            title: "Capture Mode (notes into Scratchpad)",
+            action: #selector(toggleCaptureMode),
+            keyEquivalent: ""
+        )
+        captureItem.target = self
+        captureItem.state = captureModeActive ? .on : .off
+        menu.addItem(captureItem)
+
         let claudePipeToggle = NSMenuItem(
             title: "Enable Claude Pipe",
             action: #selector(toggleClaudePipe),

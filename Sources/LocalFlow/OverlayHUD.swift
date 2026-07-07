@@ -182,6 +182,12 @@ final class OverlayHUD: NSObject {
     /// menu; only shown when `Config.claudePipeEnabled`.
     var onDictateToClaude: (() -> Void)?
 
+    /// Fires when "Capture Mode" is toggled from the pill's right-click menu.
+    var onToggleCapture: (() -> Void)?
+
+    /// Supplies whether capture mode is currently on (for the menu checkmark).
+    var captureModeIsActive: (() -> Bool)?
+
     // MARK: - State
 
     private var panel: NSPanel!
@@ -421,6 +427,15 @@ final class OverlayHUD: NSObject {
             menu.addItem(dictateToClaude)
             menu.addItem(.separator())
         }
+        let captureItem: NSMenuItem = NSMenuItem(
+            title: "Capture Mode",
+            action: #selector(menuToggleCapture),
+            keyEquivalent: ""
+        )
+        captureItem.target = self
+        captureItem.state = (captureModeIsActive?() ?? false) ? .on : .off
+        menu.addItem(captureItem)
+        menu.addItem(.separator())
         let hideItem: NSMenuItem = NSMenuItem(
             title: "Hide Flow-Bar for 1 hour",
             action: #selector(menuHideForOneHour),
@@ -442,6 +457,7 @@ final class OverlayHUD: NSObject {
     @objc private func menuHideForOneHour() { onHideForOneHour?() }
     @objc private func menuQuit() { onQuit?() }
     @objc private func menuDictateToClaude() { onDictateToClaude?() }
+    @objc private func menuToggleCapture() { onToggleCapture?() }
     @objc private func menuResetPosition() { resetPosition() }
     @objc private func menuSelectLanguage(_ sender: NSMenuItem) {
         guard let code = sender.representedObject as? String else { return }

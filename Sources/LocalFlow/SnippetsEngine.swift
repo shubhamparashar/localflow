@@ -46,6 +46,37 @@ enum SnippetsEngine {
         return result
     }
 
+    /// Fills injection-time placeholders in an expanded snippet: `{clipboard}`
+    /// becomes the given pasteboard string, `{date}` the formatted date, and
+    /// `{cursor}` is stripped, returning instead how many characters from the
+    /// END of the final text the caret should land (nil when absent; only the
+    /// first `{cursor}` counts).
+    static func fillSlots(
+        expansion: String,
+        clipboard: String,
+        date: Date
+    ) -> (text: String, cursorOffsetFromEnd: Int?) {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        var text = expansion
+            .replacingOccurrences(of: "{clipboard}", with: clipboard)
+            .replacingOccurrences(of: "{date}", with: formatter.string(from: date))
+        var offsetFromEnd: Int?
+        if let range = text.range(of: "{cursor}") {
+            // Mark the first occurrence, strip the rest, then measure — later
+            // occurrences sit in the tail and would inflate a naive distance.
+            let marker = "\u{0}"
+            text.replaceSubrange(range, with: marker)
+            text = text.replacingOccurrences(of: "{cursor}", with: "")
+            if let markerRange = text.range(of: marker) {
+                text.removeSubrange(markerRange)
+                offsetFromEnd = text.distance(from: markerRange.lowerBound, to: text.endIndex)
+            }
+        }
+        return (text, offsetFromEnd)
+    }
+
     static func count() -> Int {
         let snippets: [Snippet] = loadSnippets()
         return snippets.count

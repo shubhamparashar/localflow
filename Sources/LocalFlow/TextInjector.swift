@@ -67,6 +67,17 @@ final class TextInjector {
         }
     }
 
+    /// Repositions the caret after a paste by sending left-arrow key events
+    /// (used by snippet `{cursor}` slots). Capped — a runaway count would
+    /// visibly walk the caret across the document.
+    func moveCaretLeft(_ count: Int) {
+        guard AXIsProcessTrusted(), count > 0 else { return }
+        let leftArrowKeyCode: CGKeyCode = 123
+        for _ in 0..<min(count, 200) {
+            _ = Self.postKey(leftArrowKeyCode, flags: [])
+        }
+    }
+
     /// Escape hatch for terminals/SSH/tmux where synthetic paste fails:
     /// re-injects the most recent transcript.
     func pasteLastTranscript() {
