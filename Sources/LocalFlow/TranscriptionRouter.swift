@@ -5,15 +5,43 @@ import Foundation
 /// English and its models are loaded; whisper-server otherwise
 /// (multilingual — Hindi, Hinglish, auto-detect).
 enum TranscriptionRouter {
-    static var activeEngineName: String {
-        if Config.whisperLanguage == "en", ParakeetTranscriber.shared.isReady {
-            return "Parakeet (English)"
+    enum Engine: Equatable {
+        case parakeet
+        case whisper
+    }
+
+    /// The routing outcome for a dictation: which engine runs it, and (for
+    /// whisper) which language code to decode with — `nil` means auto-detect.
+    struct Decision: Equatable {
+        let engine: Engine
+        let whisperLanguage: String?
+    }
+
+    /// Pure decision function, no audio/network — the language selection and
+    /// Parakeet readiness fully determine the route, so this is unit-testable
+    /// in isolation. `auto` clears the language (auto-detect); `hinglish` is
+    /// the pseudo-language handled by `Transcriber`'s English-decode + seed
+    /// prompt; every other code is passed straight through to whisper.
+    static func route(language: String, parakeetReady: Bool) -> Decision {
+        if language == "en", parakeetReady {
+            return Decision(engine: .parakeet, whisperLanguage: nil)
         }
-        return "whisper large-v3-turbo"
+        switch language {
+        case "auto":
+            return Decision(engine: .whisper, whisperLanguage: nil)
+        default:
+            return Decision(engine: .whisper, whisperLanguage: language)
+        }
+    }
+
+    static var activeEngineName: String {
+        route(language: Config.whisperLanguage, parakeetReady: ParakeetTranscriber.shared.isReady).engine == .parakeet
+            ? "Parakeet (English)"
+            : "whisper large-v3-turbo"
     }
 
     static func transcribe(wav: Data, completion: @escaping (Result<String, Error>) -> Void) {
-        guard Config.whisperLanguage == "en", ParakeetTranscriber.shared.isReady else {
+        guard route(language: Config.whisperLanguage, parakeetReady: ParakeetTranscriber.shared.isReady).engine == .parakeet else {
             Transcriber.transcribe(wav: wav, completion: completion)
             return
         }

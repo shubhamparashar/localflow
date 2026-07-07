@@ -13,12 +13,16 @@ final class SettingsController: NSObject {
     var onLanguageChanged: ((String) -> Void)?
     var onLoginItemChanged: ((Bool) -> Void)?
 
+    /// Top few first (English, Hinglish, Hindi, Auto), then every other
+    /// whisper-supported language alphabetically by name.
     private static let languages: [(code: String, label: String)] = [
         ("en", "English"),
         ("hinglish", "Hinglish (Roman mix)"),
         ("hi", "Hindi (हिन्दी)"),
         ("auto", "Auto-detect"),
-    ]
+    ] + Config.whisperLanguages
+        .filter { $0.code != "en" && $0.code != "hi" }
+        .map { (code: $0.code, label: $0.name) }
 
     private var window: NSWindow?
     private var hotkeyPopup: NSPopUpButton?
