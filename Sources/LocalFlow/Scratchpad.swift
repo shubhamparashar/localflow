@@ -24,6 +24,20 @@ final class ScratchpadController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Appends `text` to the note (creating the window if needed) without
+    /// bringing it forward — callers that want it visible still call `show()`.
+    func append(_ text: String) {
+        if window == nil {
+            build()
+        }
+        guard let textView else { return }
+        let end = NSRange(location: (textView.string as NSString).length, length: 0)
+        guard textView.shouldChangeText(in: end, replacementString: text) else { return }
+        textView.replaceCharacters(in: end, with: text)
+        textView.didChangeText()
+        textView.scrollRangeToVisible(NSRange(location: (textView.string as NSString).length, length: 0))
+    }
+
     private func build() {
         let frame = NSRect(origin: .zero, size: Self.windowSize)
         let win = NSWindow(

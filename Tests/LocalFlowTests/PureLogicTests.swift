@@ -437,4 +437,51 @@ final class PureLogicTests {
         let withoutContext = OllamaCleaner.cleanupSystemPrompt(glossary: [], level: .medium)
         #expect(!withoutContext.contains("Context already in the user's document"))
     }
+
+    // MARK: - Claude pipe
+
+    @Test func claudePipeSubstitutesPlaceholderWithEnvReference() {
+        let invocation = ClaudePipe.buildInvocation(command: "claude -p {text}", transcript: "hello world")
+        #expect(invocation.executable == "/bin/zsh")
+        #expect(invocation.arguments == ["-lc", "claude -p \"$LOCALFLOW_TEXT\""])
+        #expect(invocation.environment["LOCALFLOW_TEXT"] == "hello world")
+        #expect(!invocation.arguments.joined().contains("hello world"), "transcript must never appear in the shell line itself")
+    }
+
+    @Test func claudePipeCustomCommandTemplateSubstitutesInPlace() {
+        let invocation = ClaudePipe.buildInvocation(command: "echo start && claude -p {text} | tee out.txt", transcript: "x")
+        #expect(invocation.arguments == ["-lc", "echo start && claude -p \"$LOCALFLOW_TEXT\" | tee out.txt"])
+    }
+
+    @Test func claudePipeInjectionAttemptStaysInertAsEnvValue() {
+        let malicious = "\"; rm -rf ~; echo \""
+        let invocation = ClaudePipe.buildInvocation(command: "claude -p {text}", transcript: malicious)
+        // The dangerous payload must land only in the environment dictionary,
+        // never spliced into the shell command line where it could execute.
+        #expect(invocation.arguments == ["-lc", "claude -p \"$LOCALFLOW_TEXT\""])
+        #expect(invocation.environment["LOCALFLOW_TEXT"] == malicious)
+        #expect(!invocation.arguments.joined().contains("rm -rf"))
+    }
+
+    @Test func claudePipeBacktickAndDollarStayInertAsEnvValue() {
+        let payload = "`whoami` $(id) $HOME"
+        let invocation = ClaudePipe.buildInvocation(command: "claude -p {text}", transcript: payload)
+        #expect(invocation.environment["LOCALFLOW_TEXT"] == payload)
+        #expect(!invocation.arguments.joined().contains("whoami"))
+    }
+
+    // MARK: - Dictation routing (command / claude-pipe / normal)
+
+    @Test func routeCommandTakesPrecedence() {
+        #expect(DictationRoute.decide(isCommand: true, isClaudePipe: true) == .command)
+        #expect(DictationRoute.decide(isCommand: true, isClaudePipe: false) == .command)
+    }
+
+    @Test func routeClaudePipeSkipsCleanupAndInjection() {
+        #expect(DictationRoute.decide(isCommand: false, isClaudePipe: true) == .claudePipe)
+    }
+
+    @Test func routeNormalWhenNeitherFlagSet() {
+        #expect(DictationRoute.decide(isCommand: false, isClaudePipe: false) == .normal)
+    }
 }
