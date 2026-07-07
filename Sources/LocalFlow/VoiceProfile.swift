@@ -14,6 +14,7 @@ struct DictationRecord: Codable {
     let rawText: String
     var finalText: String?
     var app: String?
+    var totalLatencySec: Double? = nil
 }
 
 struct WordCount {
