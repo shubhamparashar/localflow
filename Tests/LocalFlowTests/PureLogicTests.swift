@@ -379,6 +379,50 @@ final class PureLogicTests {
         #expect(window == text)
     }
 
+    // MARK: - Glossary importer merge/dedupe
+
+    @Test func importerMergeSkipsCaseInsensitiveDuplicates() {
+        let added = GlossaryImporter.merge(newTerms: ["Kysely", "fleek", "Shubham"], into: ["Fleek", "Kysely"])
+        #expect(added == ["Shubham"])
+    }
+
+    @Test func importerMergePreservesNewTermCasing() {
+        let added = GlossaryImporter.merge(newTerms: ["FetchUserId"], into: [])
+        #expect(added == ["FetchUserId"])
+    }
+
+    @Test func importerMergeDedupesWithinNewTermsToo() {
+        let added = GlossaryImporter.merge(newTerms: ["Priya", "priya", "Rohan"], into: [])
+        #expect(added == ["Priya", "Rohan"])
+    }
+
+    @Test func importerMergeIgnoresEmptyStrings() {
+        #expect(GlossaryImporter.merge(newTerms: ["", "Term"], into: []) == ["Term"])
+    }
+
+    // MARK: - Glossary importer identifier ranking
+
+    @Test func topIdentifiersRanksByFrequencyThenAlphabetically() {
+        let corpus = [
+            "fetchUserId fetchUserId get_user_name",
+            "fetchUserId get_user_name get_user_name",
+        ]
+        #expect(GlossaryImporter.topIdentifiers(in: corpus, top: 2) == ["fetchUserId", "get_user_name"])
+    }
+
+    @Test func topIdentifiersRespectsTopLimit() {
+        let corpus = ["fetchUserId get_user_name renderPageHeader"]
+        #expect(GlossaryImporter.topIdentifiers(in: corpus, top: 1).count == 1)
+    }
+
+    @Test func identifiersExtractCamelAndSnakeCaseOnlyAboveMinLength() {
+        let text = "let x = a; fetchUserId(); let get_user = 1; let ab = 2;"
+        let found = GlossaryImporter.identifiers(in: text)
+        #expect(found.contains("fetchUserId"))
+        #expect(!found.contains("ab"), "below minimum length")
+        #expect(!found.contains("x"), "plain short identifier is not camel or snake case")
+    }
+
     // MARK: - Prompt assembly with field context
 
     @Test func cleanupPromptIncludesFieldContextWithReferenceOnlyInstruction() {

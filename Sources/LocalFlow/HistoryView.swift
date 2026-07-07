@@ -47,7 +47,8 @@ enum HistoryView {
             if showRaw {
                 blocks += block(label: "Raw (as spoken)", text: raw)
             }
-            return "<div class=\"entry\"><div class=\"meta\">\(escape(meta))</div>\(blocks)</div>"
+            let searchText = escape((cleaned + " " + raw).lowercased())
+            return "<div class=\"entry\" data-search=\"\(searchText)\"><div class=\"meta\">\(escape(meta))</div>\(blocks)</div>"
         }.joined()
 
         let body = records.isEmpty
@@ -65,9 +66,15 @@ enum HistoryView {
         button { background: #2b3138; color: #e8eaed; border: none; border-radius: 6px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
         button:hover { background: #3a424b; }
         .empty { color: #9aa0a6; }
+        #search { width: 100%; box-sizing: border-box; background: #1b1f24; border: 1px solid #2b3138; color: #e8eaed;
+            border-radius: 8px; padding: 8px 12px; font-size: 13px; margin-bottom: 16px; }
+        #search:focus { outline: none; border-color: #8ab4f8; }
+        #noResults { display: none; color: #9aa0a6; }
         </style></head><body>
         <h1>Dictation History</h1>
         <div class="sub">Last \(records.count) dictations · newest first · "Copy raw" recovers your exact words when the AI cleanup got it wrong</div>
+        <input id="search" type="search" placeholder="Search history…" oninput="filterHistory(this.value)">
+        <p id="noResults">No dictations match your search.</p>
         \(body)
         <script>
         function cp(btn) {
@@ -76,6 +83,17 @@ enum HistoryView {
             ta.value = text; document.body.appendChild(ta); ta.select();
             document.execCommand('copy'); document.body.removeChild(ta);
             btn.textContent = 'Copied ✓'; setTimeout(() => btn.textContent = 'Copy', 1200);
+        }
+        function filterHistory(query) {
+            const needle = query.trim().toLowerCase();
+            const entries = document.querySelectorAll('.entry');
+            let visible = 0;
+            entries.forEach(entry => {
+                const match = needle === '' || (entry.dataset.search || '').includes(needle);
+                entry.style.display = match ? '' : 'none';
+                if (match) visible++;
+            });
+            document.getElementById('noResults').style.display = (visible === 0 && entries.length > 0) ? '' : 'none';
         }
         </script>
         </body></html>
