@@ -52,6 +52,8 @@ final class DashboardController: NSObject, NSWindowDelegate {
     private var weekWordsLabel: NSTextField?
     private var avgLatencyLabel: NSTextField?
     private var timeSavedLabel: NSTextField?
+    private var p50LatencyLabel: NSTextField?
+    private var p95LatencyLabel: NSTextField?
 
     private let webView = WKWebView()
 
@@ -333,7 +335,9 @@ final class DashboardController: NSObject, NSWindowDelegate {
         let week = statCard("this week", &weekWordsLabel)
         let latency = statCard("avg latency", &avgLatencyLabel)
         let saved = statCard("time saved", &timeSavedLabel)
-        let row = NSStackView(views: [today, week, latency, saved])
+        let p50 = statCard("p50 latency", &p50LatencyLabel)
+        let p95 = statCard("p95 latency", &p95LatencyLabel)
+        let row = NSStackView(views: [today, week, latency, saved, p50, p95])
         row.orientation = .horizontal
         row.spacing = 16
         return row
@@ -360,6 +364,8 @@ final class DashboardController: NSObject, NSWindowDelegate {
         weekWordsLabel?.stringValue = "\(stats.weekWords)"
         avgLatencyLabel?.stringValue = String(format: "%.1fs", stats.avgLatencySec)
         timeSavedLabel?.stringValue = String(format: "%.0fm", stats.timeSavedMinutes)
+        p50LatencyLabel?.stringValue = String(format: "%.1fs", stats.p50TakeLatencySec)
+        p95LatencyLabel?.stringValue = String(format: "%.1fs", stats.p95TakeLatencySec)
     }
 
     // MARK: - Scratchpad tab (fallback: opens the shared window)

@@ -5,6 +5,22 @@ struct DashboardStats {
     let weekWords: Int
     let avgLatencySec: Double
     let timeSavedMinutes: Double
+    let p50TakeLatencySec: Double
+    let p95TakeLatencySec: Double
+}
+
+/// Linear-interpolation percentile (matches the common "R-7" definition):
+/// sorts `values`, then interpolates between the two nearest ranks rather
+/// than snapping to the nearest sample. Returns 0 for an empty input.
+func percentile(_ values: [Double], _ p: Double) -> Double {
+    guard !values.isEmpty else { return 0 }
+    let sorted = values.sorted()
+    guard sorted.count > 1 else { return sorted[0] }
+    let rank = p * Double(sorted.count - 1)
+    let lowerIndex = Int(rank.rounded(.down))
+    let upperIndex = Int(rank.rounded(.up))
+    let fraction = rank - Double(lowerIndex)
+    return sorted[lowerIndex] + (sorted[upperIndex] - sorted[lowerIndex]) * fraction
 }
 
 /// Pure aggregation over already-loaded records — no file I/O, so it's cheap
@@ -18,7 +34,10 @@ func computeDashboardStats(records: [DictationRecord], now: Date) -> DashboardSt
     let calendar = Calendar.current
     let today = calendar.startOfDay(for: now)
     guard let weekStart = calendar.date(byAdding: .day, value: -6, to: today) else {
-        return DashboardStats(todayWords: 0, weekWords: 0, avgLatencySec: 0, timeSavedMinutes: 0)
+        return DashboardStats(
+            todayWords: 0, weekWords: 0, avgLatencySec: 0, timeSavedMinutes: 0,
+            p50TakeLatencySec: 0, p95TakeLatencySec: 0
+        )
     }
 
     let todayRecords = records.filter { calendar.isDate($0.ts, inSameDayAs: today) }
@@ -34,10 +53,16 @@ func computeDashboardStats(records: [DictationRecord], now: Date) -> DashboardSt
     let typingMinutes = Double(weekWords) / 40.0
     let timeSavedMinutes = max(0.0, typingMinutes - speakingMinutes)
 
+    let takeLatencies = weekRecords.compactMap { $0.totalLatencySec }
+    let p50TakeLatencySec = percentile(takeLatencies, 0.5)
+    let p95TakeLatencySec = percentile(takeLatencies, 0.95)
+
     return DashboardStats(
         todayWords: todayWords,
         weekWords: weekWords,
         avgLatencySec: avgLatencySec,
-        timeSavedMinutes: timeSavedMinutes
+        timeSavedMinutes: timeSavedMinutes,
+        p50TakeLatencySec: p50TakeLatencySec,
+        p95TakeLatencySec: p95TakeLatencySec
     )
 }
