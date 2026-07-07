@@ -6,6 +6,7 @@ enum HUDState {
     case recording(handsFree: Bool)
     case transcribing
     case cleaning
+    case warning(String)
 }
 
 /// Borderless panel that never takes key/main status, so the HUD can float
@@ -567,6 +568,10 @@ final class OverlayHUD: NSObject {
             symbolName = "sparkles"
             iconColor = .white
             text = "Cleaning…"
+        case .warning(let message):
+            symbolName = "exclamationmark.triangle.fill"
+            iconColor = .systemOrange
+            text = message
         }
         let config: NSImage.SymbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
         let image: NSImage? = NSImage(systemSymbolName: symbolName, accessibilityDescription: text)
@@ -792,7 +797,7 @@ final class OverlayHUD: NSObject {
         // transcribing/cleaning frames are transient and same-place, so skip
         // them to keep one-or-two lines per dictation rather than a burst.
         switch state {
-        case .transcribing, .cleaning:
+        case .transcribing, .cleaning, .warning:
             return
         case .idle, .recording:
             break
@@ -807,6 +812,7 @@ final class OverlayHUD: NSObject {
         case .recording: return "recording"
         case .transcribing: return "transcribing"
         case .cleaning: return "cleaning"
+        case .warning: return "warning"
         }
     }
 

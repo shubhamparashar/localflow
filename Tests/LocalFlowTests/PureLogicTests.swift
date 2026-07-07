@@ -484,4 +484,52 @@ final class PureLogicTests {
     @Test func routeNormalWhenNeitherFlagSet() {
         #expect(DictationRoute.decide(isCommand: false, isClaudePipe: false) == .normal)
     }
+
+    // MARK: - Redaction guard
+
+    private func kinds(_ text: String) -> Set<String> {
+        Set(RedactionGuard.findSecrets(in: text).map(\.kind))
+    }
+
+    @Test func redactionDetectsGitHubToken() {
+        #expect(kinds("here is ghp_abcdefghij1234567890XYZa ok") == ["github-token"])
+        #expect(kinds("token github_pat_11ABCDEFG0abcdefghij1234").contains("github-token"))
+    }
+
+    @Test func redactionDetectsAWSKey() {
+        #expect(kinds("key AKIAIOSFODNN7EXAMPLE in env") == ["aws-access-key"])
+    }
+
+    @Test func redactionDetectsSkStyleKey() {
+        #expect(kinds("use sk-ant-api03-abcdefghijklmnopqrst please") == ["api-key"])
+    }
+
+    @Test func redactionDetectsSlackToken() {
+        #expect(kinds("xoxb-1234567890-abcdef") == ["slack-token"])
+    }
+
+    @Test func redactionDetectsJWT() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abc12"
+        #expect(kinds(jwt) == ["jwt"])
+    }
+
+    @Test func redactionDetectsPrivateKeyHeader() {
+        #expect(kinds("-----BEGIN RSA PRIVATE KEY-----") == ["private-key"])
+        #expect(kinds("-----BEGIN PRIVATE KEY-----") == ["private-key"])
+    }
+
+    @Test func redactionGenericRuleNeedsKeywordNearby() {
+        let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        #expect(kinds("the api_key is \(hex)") == ["generic-secret"])
+        #expect(kinds("my password: dGhpc2lzYXNlY3JldHZhbHVlMTIzNDU2Nzg5MGFi").contains("generic-secret"))
+        // Same blob with no keyword within reach must NOT match.
+        #expect(kinds("checksum of the download was \(hex)").isEmpty)
+    }
+
+    @Test func redactionIgnoresCleanText() {
+        #expect(kinds("Let's meet tomorrow at 3pm to discuss the quarterly roadmap.").isEmpty)
+        #expect(kinds("see https://example.com/some/really/long/path/segment/abcdefghijklmnopqrstuvwxyz-page").isEmpty)
+        // A 40-char ordinary word.
+        #expect(kinds("pneumonoultramicroscopicsilicovolcanoconiosis is a long word").isEmpty)
+    }
 }

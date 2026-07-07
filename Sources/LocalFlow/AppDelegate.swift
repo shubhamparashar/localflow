@@ -363,6 +363,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             final = String(final.dropLast())
                         }
                         final = SnippetsEngine.apply(final)
+                        if self.redactionBlocks(final, profile: profile) {
+                            return
+                        }
                         self.injector.inject(final)
                         CorrectionWatcher.shared.recordInjection(final)
                         let cleanupSeconds: Double? = willClean ? Date().timeIntervalSince(cleanupStarted) : nil
@@ -394,6 +397,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 break
             }
         }
+    }
+
+    /// Redaction guard: if the final dictation looks like it contains a
+    /// credential and the frontmost app isn't a code editor/terminal, skip
+    /// injection, leave the text on the clipboard, and warn via the HUD.
+    /// Returns true when injection was blocked.
+    private func redactionBlocks(_ text: String, profile: AppCategoryProfile?) -> Bool {
+        guard Config.redactionGuardEnabled, profile?.category != "code" else { return false }
+        let secrets = RedactionGuard.findSecrets(in: text)
+        guard !secrets.isEmpty else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        hud.show(.warning("⚠︎ Looks like a secret — Cmd+V to paste anyway"))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            self?.refreshIdleHUD()
+        }
+        let kinds = Set(secrets.map(\.kind)).sorted().joined(separator: ", ")
+        Log.info("Redaction guard: blocked injection (kinds: \(kinds)) — text left on clipboard")
+        return true
     }
 
     private static func wordCount(_ text: String) -> Int {
@@ -812,6 +835,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quietMode.state = Config.quietModeEnabled ? .on : .off
         menu.addItem(quietMode)
 
+        let redactionGuard = NSMenuItem(
+            title: "Redaction Guard",
+            action: #selector(toggleRedactionGuard),
+            keyEquivalent: ""
+        )
+        redactionGuard.target = self
+        redactionGuard.state = Config.redactionGuardEnabled ? .on : .off
+        menu.addItem(redactionGuard)
+
         let loginItem = NSMenuItem(
             title: "Start at Login",
             action: #selector(toggleLoginItem),
@@ -898,6 +930,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleQuietMode() {
         Config.quietModeEnabled.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func toggleRedactionGuard() {
+        Config.redactionGuardEnabled.toggle()
         rebuildMenu()
     }
 

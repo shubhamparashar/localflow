@@ -223,6 +223,14 @@ enum Config {
         set { defaults.set(newValue, forKey: "playStartSound") }
     }
 
+    /// Blocks injection into non-code apps when the final text looks like it
+    /// contains a credential (see `RedactionGuard`); the text stays on the
+    /// clipboard so the user can Cmd+V deliberately.
+    static var redactionGuardEnabled: Bool {
+        get { defaults.object(forKey: "redactionGuardEnabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "redactionGuardEnabled") }
+    }
+
     /// Boosts input gain and lowers the VAD speech threshold for quiet or
     /// whispered speech. Not a whisper-specific model — just a more
     /// sensitive capture profile.
