@@ -90,10 +90,15 @@ enum VoiceProfileStore {
     )
 
     static func present() {
+        reportWindow.show(html: html())
+    }
+
+    /// Renders the current voice profile as HTML, for embedding in the
+    /// dashboard's Voice Profile tab (or any other in-app WKWebView).
+    static func html() -> String {
         let records: [DictationRecord] = queue.sync { loadRecords() }
         let stats: VoiceProfileStats = computeStats(records)
-        let html: String = renderHTML(stats)
-        reportWindow.show(html: html)
+        return renderHTML(stats)
     }
 
     // MARK: - JSONL encode/decode
@@ -116,6 +121,12 @@ enum VoiceProfileStore {
             }
         }
         return records
+    }
+
+    /// Loads every stored dictation record — for callers (e.g. the dashboard)
+    /// that need the raw records rather than the pre-aggregated report stats.
+    static func loadAllRecords() -> [DictationRecord] {
+        queue.sync { loadRecords() }
     }
 
     // MARK: - Aggregation

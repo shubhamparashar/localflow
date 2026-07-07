@@ -12,9 +12,14 @@ enum HistoryView {
     )
 
     static func present() {
+        window.show(html: html())
+    }
+
+    /// Renders the current history as HTML, for embedding in the dashboard's
+    /// History tab (or any other in-app WKWebView).
+    static func html() -> String {
         let records = loadRecords().suffix(maxEntries).reversed()
-        let html = render(Array(records))
-        window.show(html: html)
+        return render(Array(records))
     }
 
     private static func loadRecords() -> [DictationRecord] {

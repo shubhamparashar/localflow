@@ -200,6 +200,13 @@ enum Config {
         set { defaults.set(newValue, forKey: "hasCompletedOnboarding") }
     }
 
+    /// Shows the "Open LocalFlow" dashboard automatically on every launch.
+    /// Off by default so existing menu-bar-only launch behavior is unchanged.
+    static var openDashboardOnLaunch: Bool {
+        get { defaults.object(forKey: "openDashboardOnLaunch") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "openDashboardOnLaunch") }
+    }
+
     static var vadModelPath: String {
         Log.dir.appendingPathComponent("models/ggml-silero-v5.1.2.bin").path
     }

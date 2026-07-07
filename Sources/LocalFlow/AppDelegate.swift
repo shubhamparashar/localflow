@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         ensurePermissions()
         maybeShowOnboarding()
+        maybeShowDashboardOnLaunch()
         OllamaCleaner.warmUp()
 
         ModelDownloader.shared.onStatusChange = { [weak self] in
@@ -105,6 +106,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.onLoginItemChanged = { [weak self] enabled in
             self?.setLoginItem(enabled)
         }
+        DashboardController.shared.settings.onChanged = settings.onChanged
+        DashboardController.shared.settings.onCleanupEnabled = settings.onCleanupEnabled
+        DashboardController.shared.settings.onLanguageChanged = settings.onLanguageChanged
+        DashboardController.shared.settings.onLoginItemChanged = settings.onLoginItemChanged
+        DashboardController.shared.onOpenScratchpad = { [weak self] in self?.scratchpad.show() }
         hotkey.onPress = { [weak self] in self?.hotkeyPressed() }
         hotkey.onRelease = { [weak self] in self?.hotkeyReleased() }
         hotkey.onCommandPress = { [weak self] in self?.commandPressed() }
@@ -446,6 +452,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+
+        let dashboardItem = NSMenuItem(
+            title: "Open LocalFlow…",
+            action: #selector(showDashboard),
+            keyEquivalent: ""
+        )
+        dashboardItem.target = self
+        menu.addItem(dashboardItem)
+        menu.addItem(.separator())
 
         let statusTitle: String
         if case .downloading(let name, let progress) = ModelDownloader.shared.status {
@@ -836,6 +851,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showOnboarding() {
         onboarding.show()
+    }
+
+    private func maybeShowDashboardOnLaunch() {
+        guard Config.openDashboardOnLaunch else { return }
+        DashboardController.shared.show()
+    }
+
+    @objc private func showDashboard() {
+        DashboardController.shared.show()
     }
 
     @objc private func openLogs() {

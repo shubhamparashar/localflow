@@ -15,7 +15,7 @@ final class SettingsController: NSObject {
 
     /// Top few first (English, Hinglish, Hindi, Auto), then every other
     /// whisper-supported language alphabetically by name.
-    private static let languages: [(code: String, label: String)] = [
+    static let languages: [(code: String, label: String)] = [
         ("en", "English"),
         ("hinglish", "Hinglish (Roman mix)"),
         ("hi", "Hindi (हिन्दी)"),
@@ -44,9 +44,44 @@ final class SettingsController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Builds the settings controls as a plain view (no window), for
+    /// embedding as dashboard tab content. Rebuilds the controls each call so
+    /// this instance's control references stay in sync with whichever
+    /// hierarchy last requested them, then syncs them to `Config`.
+    func embeddableContentView() -> NSView {
+        let stack = buildStack()
+        refresh()
+        return stack
+    }
+
     // MARK: - Build
 
     private func build() {
+        let content = NSView()
+        let stack = buildStack()
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
+        ])
+
+        let fitting = stack.fittingSize
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: fitting.width + 40, height: fitting.height + 40),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        win.title = "LocalFlow Settings"
+        win.isReleasedWhenClosed = false
+        win.contentView = content
+        win.center()
+        window = win
+    }
+
+    private func buildStack() -> NSStackView {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -115,27 +150,7 @@ final class SettingsController: NSObject {
         fileRow.spacing = 8
         stack.addArrangedSubview(fileRow)
 
-        let content = NSView()
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
-        ])
-
-        let fitting = stack.fittingSize
-        let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: fitting.width + 40, height: fitting.height + 40),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        win.title = "LocalFlow Settings"
-        win.isReleasedWhenClosed = false
-        win.contentView = content
-        win.center()
-        window = win
+        return stack
     }
 
     private func header(_ text: String) -> NSView {
