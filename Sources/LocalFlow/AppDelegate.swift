@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var commandSelection: String?
     private var lastRawTranscript: String?
     private var sessionProfile: AppCategoryProfile?
+    private var sessionFieldContext: String?
 
     private static let tapMaxDuration: TimeInterval = 0.35
 
@@ -183,6 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CorrectionWatcher.shared.checkPending()
         // Captured at press time: the app the user is dictating into.
         sessionProfile = AppContext.currentProfile()
+        sessionFieldContext = FieldContext.capture()
         partialCaptionRunner.cancel()
         do {
             try recorder.start()
@@ -254,7 +256,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func transcribeAndRoute(_ wav: Data, isCommand: Bool, mode: String) {
         let sttStarted = Date()
         let profile = sessionProfile
-        TranscriptionRouter.transcribe(wav: wav) { [weak self] result in
+        let fieldContext = sessionFieldContext
+        TranscriptionRouter.transcribe(wav: wav, fieldContext: fieldContext) { [weak self] result in
             guard let self else { return }
             let sttSeconds = Date().timeIntervalSince(sttStarted)
             self.state = .idle
@@ -276,7 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if let profile, willClean {
                         Log.info("Cleanup context: \(profile.category)")
                     }
-                    OllamaCleaner.clean(text, profile: profile) { cleaned in
+                    OllamaCleaner.clean(text, profile: profile, fieldContext: fieldContext) { cleaned in
                         if self.state != .recording { self.refreshIdleHUD() }
                         var final = cleaned
                         if profile?.stripTrailingPeriod == true,

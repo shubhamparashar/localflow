@@ -295,4 +295,54 @@ final class PureLogicTests {
     @Test func partialTickSkipsAtThresholdWhenBusy() {
         #expect(!PartialCaptionScheduler.shouldRunTick(elapsedSamples: 16_000, samplesPerTick: 16_000, inFlight: true))
     }
+
+    // MARK: - FieldContext sanitization
+
+    @Test func fieldContextWindowAroundCaret() {
+        let text = String(repeating: "a", count: 1000)
+        let window = FieldContext.sanitizedWindow(fullText: text, caretOffset: 500, maxLength: 500)
+        #expect(window.count == 500)
+    }
+
+    @Test func fieldContextNoCaretFallsBackToTail() {
+        let text = String(repeating: "x", count: 10) + String(repeating: "y", count: 1000)
+        let window = FieldContext.sanitizedWindow(fullText: text, caretOffset: nil, maxLength: 500)
+        #expect(window.count == 500)
+        #expect(window == String(repeating: "y", count: 500))
+    }
+
+    @Test func fieldContextStripsControlCharsAndCollapsesWhitespace() {
+        let text = "hello\u{0007}world  with   \t\nspaces"
+        let window = FieldContext.sanitizedWindow(fullText: text, caretOffset: nil, maxLength: 500)
+        #expect(!window.contains("\u{0007}"))
+        #expect(!window.contains("  "))
+        #expect(window == "helloworld with spaces")
+    }
+
+    @Test func fieldContextEnforcesMaxLength() {
+        let text = String(repeating: "z", count: 5_000)
+        let window = FieldContext.sanitizedWindow(fullText: text, caretOffset: 2_500, maxLength: 500)
+        #expect(window.count <= 500)
+    }
+
+    @Test func fieldContextShortTextPassesThroughUnchanged() {
+        let text = "short field text"
+        let window = FieldContext.sanitizedWindow(fullText: text, caretOffset: nil, maxLength: 500)
+        #expect(window == text)
+    }
+
+    // MARK: - Prompt assembly with field context
+
+    @Test func cleanupPromptIncludesFieldContextWithReferenceOnlyInstruction() {
+        var system = OllamaCleaner.cleanupSystemPrompt(glossary: [], level: .medium)
+        let fieldContext = "Dear Priyanka, following up on the invoice"
+        system += "\n\nContext already in the user's document (for spelling/proper nouns only, do NOT include it in the output):\n\(fieldContext)"
+        #expect(system.contains(fieldContext))
+        #expect(system.contains("do NOT include it in the output"))
+    }
+
+    @Test func cleanupPromptWithoutFieldContextIsUnchanged() {
+        let withoutContext = OllamaCleaner.cleanupSystemPrompt(glossary: [], level: .medium)
+        #expect(!withoutContext.contains("Context already in the user's document"))
+    }
 }

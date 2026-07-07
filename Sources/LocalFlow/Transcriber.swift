@@ -2,7 +2,11 @@ import Foundation
 
 /// Client for the whisper.cpp server's /inference endpoint.
 enum Transcriber {
-    static func transcribe(wav: Data, completion: @escaping (Result<String, Error>) -> Void) {
+    /// Total cap on the combined glossary + field-context prompt sent to
+    /// whisper; well under the model's context window.
+    static let maxPromptLength = 800
+
+    static func transcribe(wav: Data, fieldContext: String? = nil, completion: @escaping (Result<String, Error>) -> Void) {
         let boundary = "----LocalFlow\(UUID().uuidString)"
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(Config.serverPort)/inference")!)
         request.httpMethod = "POST"
@@ -33,8 +37,12 @@ enum Transcriber {
         if let glossaryPrompt = Glossary.whisperPrompt() {
             promptParts.append(glossaryPrompt)
         }
+        if let fieldContext, !fieldContext.isEmpty {
+            promptParts.append("Context: " + fieldContext)
+        }
         if !promptParts.isEmpty {
-            appendField("prompt", promptParts.joined(separator: " "))
+            let joined = promptParts.joined(separator: " ")
+            appendField("prompt", String(joined.prefix(maxPromptLength)))
         }
         body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".utf8))
         body.append(wav)

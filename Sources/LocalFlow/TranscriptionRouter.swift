@@ -40,9 +40,9 @@ enum TranscriptionRouter {
             : "whisper large-v3-turbo"
     }
 
-    static func transcribe(wav: Data, completion: @escaping (Result<String, Error>) -> Void) {
+    static func transcribe(wav: Data, fieldContext: String? = nil, completion: @escaping (Result<String, Error>) -> Void) {
         guard route(language: Config.whisperLanguage, parakeetReady: ParakeetTranscriber.shared.isReady).engine == .parakeet else {
-            Transcriber.transcribe(wav: wav, completion: completion)
+            Transcriber.transcribe(wav: wav, fieldContext: fieldContext, completion: completion)
             return
         }
         let started = Date()
@@ -55,7 +55,7 @@ enum TranscriptionRouter {
                 completion(.success(cleaned))
             case .failure(let error):
                 Log.error("Parakeet failed (\(error.localizedDescription)) — falling back to whisper")
-                Transcriber.transcribe(wav: wav, completion: completion)
+                Transcriber.transcribe(wav: wav, fieldContext: fieldContext, completion: completion)
             }
         }
     }
