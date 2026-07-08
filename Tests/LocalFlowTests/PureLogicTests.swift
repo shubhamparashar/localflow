@@ -587,3 +587,40 @@ final class PureLogicTests {
         #expect(kinds("pneumonoultramicroscopicsilicovolcanoconiosis is a long word").isEmpty)
     }
 }
+
+// MARK: - Decode-loop collapse & capture language
+
+@Suite struct TranscriptQualityTests {
+    @Test func collapseShrinksTriplePlusRuns() {
+        let text = "I was doing a lot of migration. I was doing a lot of migration. "
+            + "I was doing a lot of migration. I was doing a lot of migration. Then it worked."
+        let out = Transcriber.collapseRepeatedSentences(text)
+        #expect(out == "I was doing a lot of migration. Then it worked.")
+    }
+
+    @Test func collapseKeepsDoubleRepeats() {
+        let text = "No. No. Please stop."
+        #expect(Transcriber.collapseRepeatedSentences(text) == text)
+    }
+
+    @Test func collapseLeavesNormalTextUntouched() {
+        let text = "First sentence here. A second one follows. And a third closes it."
+        #expect(Transcriber.collapseRepeatedSentences(text) == text)
+    }
+
+    @Test func collapseIsCaseAndWhitespaceInsensitive() {
+        let text = "We can't do it.  we can't do it. WE CAN'T DO IT. Fine."
+        #expect(Transcriber.collapseRepeatedSentences(text) == "We can't do it. Fine.")
+    }
+
+    @Test func captureLanguageResolution() {
+        let saved = Config.captureLanguage
+        defer { Config.captureLanguage = saved }
+        Config.captureLanguage = "auto"
+        #expect(Config.effectiveCaptureLanguage(dictationLanguage: "en") == "auto")
+        Config.captureLanguage = "same"
+        #expect(Config.effectiveCaptureLanguage(dictationLanguage: "hinglish") == "hinglish")
+        Config.captureLanguage = "hinglish"
+        #expect(Config.effectiveCaptureLanguage(dictationLanguage: "en") == "hinglish")
+    }
+}

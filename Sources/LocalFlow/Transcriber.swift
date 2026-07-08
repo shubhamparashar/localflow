@@ -6,7 +6,12 @@ enum Transcriber {
     /// whisper; well under the model's context window.
     static let maxPromptLength = 800
 
-    static func transcribe(wav: Data, fieldContext: String? = nil, completion: @escaping (Result<String, Error>) -> Void) {
+    static func transcribe(
+        wav: Data,
+        fieldContext: String? = nil,
+        languageOverride: String? = nil,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
         let boundary = "----LocalFlow\(UUID().uuidString)"
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(Config.serverPort)/inference")!)
         request.httpMethod = "POST"
@@ -19,7 +24,7 @@ enum Transcriber {
         }
         appendField("temperature", "0.0")
         appendField("response_format", "json")
-        let language = Config.whisperLanguage
+        let language = languageOverride ?? Config.whisperLanguage
         var promptParts: [String] = []
         switch language {
         case "auto":
@@ -79,6 +84,41 @@ enum Transcriber {
     /// Trims whitespace, collapses whisper's segment-break newlines into
     /// single spaces, and drops non-speech markers emitted for silence or
     /// noise, e.g. "[BLANK_AUDIO]", "(wind blowing)", "*music*".
+    /// Collapses whisper "decode loop" artifacts: runs of 3+ identical
+    /// consecutive sentences (ignoring case/whitespace) shrink to a single
+    /// occurrence. Two repeats are left alone — people do repeat themselves.
+    /// Collapses whisper "decode loop" artifacts: a run of 3+ identical
+    /// consecutive sentences (ignoring case/whitespace) shrinks to a single
+    /// occurrence. Two repeats are left alone — people do repeat themselves.
+    static func collapseRepeatedSentences(_ text: String) -> String {
+        let pattern = #"[^.!?\n]+[.!?\n]*\s*"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard matches.count >= 3 else { return text }
+        let sentences = matches.map { nsText.substring(with: $0.range) }
+        var groups: [(sentence: String, count: Int)] = []
+        for sentence in sentences {
+            let key = sentence.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if let last = groups.last,
+               last.sentence.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) == key,
+               !key.isEmpty {
+                groups[groups.count - 1].count += 1
+            } else {
+                groups.append((sentence, 1))
+            }
+        }
+        guard groups.contains(where: { $0.count >= 3 }) else { return text }
+        var out = ""
+        for group in groups {
+            out += String(repeating: group.sentence, count: group.count >= 3 ? 1 : group.count)
+        }
+        while out.contains("  ") {
+            out = out.replacingOccurrences(of: "  ", with: " ")
+        }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func clean(_ raw: String) -> String {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         text = text.replacingOccurrences(

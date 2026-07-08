@@ -242,6 +242,21 @@ enum Config {
     /// Boosts input gain and lowers the VAD speech threshold for quiet or
     /// whispered speech. Not a whisper-specific model — just a more
     /// sensitive capture profile.
+    /// Language used for Capture Mode chunks: "auto" (whisper auto-detect,
+    /// default), "same" (follow the dictation language), or any language
+    /// code / "hinglish". Meetings are often multilingual even when
+    /// dictation is set to English, so capture routes independently.
+    static var captureLanguage: String {
+        get { defaults.string(forKey: "captureLanguage") ?? "auto" }
+        set { defaults.set(newValue, forKey: "captureLanguage") }
+    }
+
+    /// Resolves the effective whisper language for a capture chunk.
+    static func effectiveCaptureLanguage(dictationLanguage: String) -> String {
+        let choice = captureLanguage
+        return choice == "same" ? dictationLanguage : choice
+    }
+
     static var quietModeEnabled: Bool {
         get { defaults.object(forKey: "quietModeEnabled") as? Bool ?? false }
         set { defaults.set(newValue, forKey: "quietModeEnabled") }

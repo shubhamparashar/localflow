@@ -59,7 +59,7 @@ final class AudioRecorder {
     private static let longFormSilenceWindow: TimeInterval = 2.5
     private static let longFormAfter: TimeInterval = 12
     private static let noSpeechTimeout: TimeInterval = 10
-    private static let maxHandsFreeDuration: TimeInterval = 180
+    private static let maxHandsFreeDuration: TimeInterval = 600
 
     /// Pure endpoint-window selection, exposed for testing.
     static func endpointSilenceWindow(speakingFor: TimeInterval) -> TimeInterval {

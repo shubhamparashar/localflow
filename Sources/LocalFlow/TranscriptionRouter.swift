@@ -40,9 +40,21 @@ enum TranscriptionRouter {
             : "whisper large-v3-turbo"
     }
 
-    static func transcribe(wav: Data, fieldContext: String? = nil, completion: @escaping (Result<String, Error>) -> Void) {
-        guard route(language: Config.whisperLanguage, parakeetReady: ParakeetTranscriber.shared.isReady).engine == .parakeet else {
-            Transcriber.transcribe(wav: wav, fieldContext: fieldContext, completion: completion)
+    static func transcribe(
+        wav: Data,
+        fieldContext: String? = nil,
+        languageOverride: String? = nil,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        // Every engine's output goes through the decode-loop collapse — a
+        // single choke point so repetition artifacts never reach injection,
+        // cleanup, or capture notes.
+        let deliver: (Result<String, Error>) -> Void = { result in
+            completion(result.map(Transcriber.collapseRepeatedSentences))
+        }
+        let language = languageOverride ?? Config.whisperLanguage
+        guard route(language: language, parakeetReady: ParakeetTranscriber.shared.isReady).engine == .parakeet else {
+            Transcriber.transcribe(wav: wav, fieldContext: fieldContext, languageOverride: languageOverride, completion: deliver)
             return
         }
         let started = Date()
@@ -52,10 +64,10 @@ enum TranscriptionRouter {
                 let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
                 let cleaned = Transcriber.clean(text)
                 Log.info("Parakeet transcribed in \(elapsed)s: \"\(cleaned)\"")
-                completion(.success(cleaned))
+                deliver(.success(cleaned))
             case .failure(let error):
                 Log.error("Parakeet failed (\(error.localizedDescription)) — falling back to whisper")
-                Transcriber.transcribe(wav: wav, fieldContext: fieldContext, completion: completion)
+                Transcriber.transcribe(wav: wav, fieldContext: fieldContext, languageOverride: languageOverride, completion: deliver)
             }
         }
     }

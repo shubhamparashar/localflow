@@ -361,7 +361,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let sttStarted = Date()
         let profile = sessionProfile
         let fieldContext = sessionFieldContext
-        TranscriptionRouter.transcribe(wav: wav, fieldContext: fieldContext) { [weak self] result in
+        // Capture chunks route with their own language setting — a meeting's
+        // language rarely matches the configured dictation language.
+        let languageOverride: String? = isCapture
+            ? Config.effectiveCaptureLanguage(dictationLanguage: Config.whisperLanguage)
+            : nil
+        TranscriptionRouter.transcribe(wav: wav, fieldContext: fieldContext, languageOverride: languageOverride) { [weak self] result in
             guard let self else { return }
             let sttSeconds = Date().timeIntervalSince(sttStarted)
             self.state = .idle
@@ -535,6 +540,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 endDictation()
             }
         }
+        rebuildMenu()
+    }
+
+    @objc private func selectCaptureLanguage(_ sender: NSMenuItem) {
+        guard let code = sender.representedObject as? String else { return }
+        Config.captureLanguage = code
+        Log.info("Capture language set to \(code)")
         rebuildMenu()
     }
 
@@ -859,6 +871,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         captureItem.target = self
         captureItem.state = captureModeActive ? .on : .off
         menu.addItem(captureItem)
+
+        let captureLangRoot = NSMenuItem(title: "Capture Language", action: nil, keyEquivalent: "")
+        let captureLangMenu = NSMenu()
+        let captureChoices: [(String, String)] = [
+            ("auto", "Auto-detect"),
+            ("same", "Same as Dictation"),
+            ("hinglish", "Hinglish"),
+        ]
+        for (code, title) in captureChoices {
+            let item = NSMenuItem(title: title, action: #selector(selectCaptureLanguage(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = code
+            item.state = Config.captureLanguage == code ? .on : .off
+            captureLangMenu.addItem(item)
+        }
+        menu.addItem(captureLangRoot)
+        menu.setSubmenu(captureLangMenu, for: captureLangRoot)
 
         let claudePipeToggle = NSMenuItem(
             title: "Enable Claude Pipe",
