@@ -203,6 +203,7 @@ final class OverlayHUD: NSObject {
     private var iconView: NSImageView!
     private var textLabel: NSTextField!
     private var elapsedLabel: NSTextField!
+    private var badgeChip: NSView!
     private var badgeLabel: NSTextField!
     private var handsFreeDotView: NSView!
     private var shimmerView: NSView!
@@ -412,14 +413,16 @@ final class OverlayHUD: NSObject {
         elapsedLabel.alignment = .right
         effect.addSubview(elapsedLabel)
 
+        badgeChip = NSView(frame: .zero)
+        badgeChip.wantsLayer = true
+        badgeChip.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        badgeChip.layer?.cornerRadius = 9
+        effect.addSubview(badgeChip)
         badgeLabel = NSTextField(labelWithString: "")
         badgeLabel.font = NSFont.systemFont(ofSize: 10, weight: .bold)
         badgeLabel.textColor = NSColor.white.withAlphaComponent(0.9)
         badgeLabel.alignment = .center
-        badgeLabel.wantsLayer = true
-        badgeLabel.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
-        badgeLabel.layer?.cornerRadius = 9
-        effect.addSubview(badgeLabel)
+        badgeChip.addSubview(badgeLabel)
 
         barViews = (0..<Self.barCount).map { (index: Int) -> NSView in
             let bar: NSView = NSView(frame: .zero)
@@ -591,7 +594,7 @@ final class OverlayHUD: NSObject {
     /// silent cycle-through-recents, which read as "nothing happened".
     private func cycleLanguageBadge() {
         let menu: NSMenu = buildLanguageMenu()
-        let origin: NSPoint = NSPoint(x: badgeLabel.frame.minX, y: badgeLabel.frame.minY - 4)
+        let origin: NSPoint = NSPoint(x: badgeChip.frame.minX, y: badgeChip.frame.minY - 4)
         menu.popUp(positioning: nil, at: origin, in: contentView)
     }
 
@@ -617,9 +620,11 @@ final class OverlayHUD: NSObject {
         guard isHovering != hovering else { return }
         isHovering = hovering
         // Only the idle pill changes shape on hover (collapsed icon ↔ hint).
+        // Instant relayout: an animated panel resize leaves the (already
+        // target-positioned) content misaligned for the animation's duration.
         guard isIdle(currentState) else { return }
         applyVisuals()
-        relayout(animated: true)
+        relayout(animated: false)
     }
 
     // MARK: - State application
@@ -710,7 +715,8 @@ final class OverlayHUD: NSObject {
         let showBadge: Bool = isIdle(state)
         badgeLabel.stringValue = showBadge ? Config.languageBadge(for: Config.whisperLanguage) : ""
         badgeLabel.isHidden = !showBadge
-        badgeLabel.alphaValue = (showBadge && !isHovering) ? 0.6 : 1.0
+        badgeChip.isHidden = !showBadge
+        badgeChip.alphaValue = (showBadge && !isHovering) ? 0.7 : 1.0
         handsFreeDotView.isHidden = !isHandsFree(state)
 
         let isWarningWash: Bool
@@ -906,11 +912,18 @@ final class OverlayHUD: NSObject {
             contentView.badgeHitFrame = nil
             return
         }
-        let height: CGFloat = 18
-        let width: CGFloat = badgeLabel.frame.width + 12
-        let frame: NSRect = NSRect(x: x - 12, y: midY - height / 2, width: width, height: height)
-        setFrame(frame, on: badgeLabel, animated: animated)
-        contentView.badgeHitFrame = frame.insetBy(dx: -6, dy: -6)
+        let textSize: NSSize = badgeLabel.frame.size
+        let chipHeight: CGFloat = 18
+        let chipWidth: CGFloat = textSize.width + 12
+        let chipFrame: NSRect = NSRect(x: x - 12, y: midY - chipHeight / 2, width: chipWidth, height: chipHeight)
+        setFrame(chipFrame, on: badgeChip, animated: animated)
+        badgeLabel.frame = NSRect(
+            x: (chipWidth - textSize.width) / 2,
+            y: (chipHeight - textSize.height) / 2,
+            width: textSize.width,
+            height: textSize.height
+        )
+        contentView.badgeHitFrame = chipFrame.insetBy(dx: -6, dy: -6)
     }
 
     /// A small dot overlaid on the mic glyph's corner, shown only while
