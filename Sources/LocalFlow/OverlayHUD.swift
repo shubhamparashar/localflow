@@ -836,7 +836,8 @@ final class OverlayHUD: NSObject {
 
         // Idle-collapsed pill is just a centered mic glyph plus the badge.
         if idleCollapsed {
-            let iconWidth: CGFloat = showBadge ? Self.iconSize + Self.elementGap + badgeLabel.frame.width : Self.iconSize
+            let chipWidth: CGFloat = badgeLabel.frame.width + 12
+            let iconWidth: CGFloat = showBadge ? Self.iconSize + Self.elementGap + chipWidth : Self.iconSize
             let iconX: CGFloat = (width - iconWidth) / 2
             setFrame(
                 NSRect(x: iconX, y: midY - Self.iconSize / 2, width: Self.iconSize, height: Self.iconSize),
@@ -865,7 +866,7 @@ final class OverlayHUD: NSObject {
             )
         }
 
-        let badgeX: CGFloat = width - Self.horizontalPadding - badgeLabel.frame.width
+        let badgeX: CGFloat = width - Self.horizontalPadding - (badgeLabel.frame.width + 12)
         layoutBadge(showBadge: showBadge, x: badgeX, midY: midY, animated: animated)
 
         if recording {
@@ -915,7 +916,7 @@ final class OverlayHUD: NSObject {
         let textSize: NSSize = badgeLabel.frame.size
         let chipHeight: CGFloat = 18
         let chipWidth: CGFloat = textSize.width + 12
-        let chipFrame: NSRect = NSRect(x: x - 12, y: midY - chipHeight / 2, width: chipWidth, height: chipHeight)
+        let chipFrame: NSRect = NSRect(x: x, y: midY - chipHeight / 2, width: chipWidth, height: chipHeight)
         setFrame(chipFrame, on: badgeChip, animated: animated)
         badgeLabel.frame = NSRect(
             x: (chipWidth - textSize.width) / 2,
