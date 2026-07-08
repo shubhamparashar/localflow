@@ -1116,7 +1116,8 @@ final class OverlayHUD: NSObject {
     }
 
     private func stopShimmer() {
-        shimmerView.layer?.removeAnimation(forKey: Self.shimmerAnimationKey)
+        // hide() can run before the panel (and thus shimmerView) is built.
+        shimmerView?.layer?.removeAnimation(forKey: Self.shimmerAnimationKey)
     }
 
     deinit {
