@@ -332,7 +332,7 @@ final class DashboardController: NSObject, NSWindowDelegate {
         ])
         scroll.documentView = clipDoc
         clipDoc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
-        return scroll
+        return card(scroll, padding: 20)
     }
 
     private func timelineRow(record: DictationRecord, timeString: String) -> NSView {
@@ -704,6 +704,10 @@ private final class HoverRowView: NSView {
 
     init(copyText: String) {
         self.copyText = copyText
+        defer {
+            wantsLayer = true
+            layer?.cornerRadius = 8
+        }
         let image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
         copyButton = NSButton(image: image ?? NSImage(), target: nil, action: nil)
         copyButton.isBordered = false
@@ -738,9 +742,11 @@ private final class HoverRowView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         copyButton.isHidden = false
+        layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor
     }
 
     override func mouseExited(with event: NSEvent) {
         copyButton.isHidden = true
+        layer?.backgroundColor = NSColor.clear.cgColor
     }
 }

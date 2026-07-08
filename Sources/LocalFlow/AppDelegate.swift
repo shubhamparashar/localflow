@@ -614,11 +614,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         case "paste-last":
             injector.pasteLastTranscript()
+        case "snap":
+            snapWindows()
         case "paste-raw":
             if let raw = lastRawTranscript { injector.inject(raw) }
         default:
             Log.error("Unknown URL command: \(command)")
         }
+    }
+
+    /// Debug aid: renders every app window (dashboard, pill, settings…) to
+    /// PNGs in /tmp/localflow-snaps — screen-capture tools can't see an
+    /// LSUIElement app's windows, but the app can draw its own.
+    private func snapWindows() {
+        let dir = URL(fileURLWithPath: "/tmp/localflow-snaps")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for (index, window) in NSApp.windows.enumerated() where window.isVisible {
+            // Capture real on-screen pixels — offscreen cacheDisplay drops
+            // vibrant text inside visual-effect hierarchies.
+            let windowID = CGWindowID(window.windowNumber)
+            guard let cgImage = CGWindowListCreateImage(
+                .null,
+                .optionIncludingWindow,
+                windowID,
+                [.boundsIgnoreFraming, .bestResolution]
+            ) else { continue }
+            let rep = NSBitmapImageRep(cgImage: cgImage)
+            guard let data = rep.representation(using: .png, properties: [:]) else { continue }
+            let name = (window.title.isEmpty ? "window\(index)" : window.title.replacingOccurrences(of: " ", with: "-")).lowercased()
+            try? data.write(to: dir.appendingPathComponent("\(name)-\(index).png"))
+        }
+        Log.info("Snapped \(NSApp.windows.filter(\.isVisible).count) windows to /tmp/localflow-snaps")
     }
 
     /// Starts a hands-free (VAD auto-stop) dictation, as used by URL triggers.
