@@ -62,12 +62,6 @@ final class DashboardController: NSObject, NSWindowDelegate {
     private var languagePopup: NSPopUpButton?
     private var quietModeCheck: NSButton?
     private var launchCheck: NSButton?
-    private var todayWordsLabel: NSTextField?
-    private var weekWordsLabel: NSTextField?
-    private var timeSavedLabel: NSTextField?
-    private var timeSavedSubLabel: NSTextField?
-    private var p50LatencyLabel: NSTextField?
-    private var latencySubLabel: NSTextField?
 
     private let webView = WKWebView()
 
@@ -84,7 +78,7 @@ final class DashboardController: NSObject, NSWindowDelegate {
 
     private func build() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -94,7 +88,7 @@ final class DashboardController: NSObject, NSWindowDelegate {
         win.titleVisibility = .hidden
         win.isReleasedWhenClosed = false
         win.delegate = self
-        win.minSize = NSSize(width: 620, height: 420)
+        win.minSize = NSSize(width: 800, height: 520)
         win.center()
 
         let sidebar = buildSidebar()
@@ -129,6 +123,17 @@ final class DashboardController: NSObject, NSWindowDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         // Extra top inset clears the transparent titlebar's traffic-light buttons.
         stack.edgeInsets = NSEdgeInsets(top: 36, left: 10, bottom: 16, right: 10)
+
+        let logo = NSImageView(image: NSImage(systemSymbolName: "waveform", accessibilityDescription: "LocalFlow")!)
+        logo.contentTintColor = .controlAccentColor
+        let wordmark = NSTextField(labelWithString: "LocalFlow")
+        wordmark.font = .boldSystemFont(ofSize: 15)
+        let brand = NSStackView(views: [logo, wordmark])
+        brand.orientation = .horizontal
+        brand.spacing = 6
+        brand.alignment = .centerY
+        brand.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 10, right: 0)
+        stack.addArrangedSubview(brand)
 
         for tab in Tab.allCases {
             let button = NSButton(title: " \(tab.title)", target: self, action: #selector(sidebarTapped(_:)))
@@ -201,22 +206,299 @@ final class DashboardController: NSObject, NSWindowDelegate {
     // MARK: - Home tab
 
     private func buildHomeTab() -> NSView {
+        let records = VoiceProfileStore.loadAllRecords()
+
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 24
+        root.translatesAutoresizingMaskIntoConstraints = false
+        root.edgeInsets = NSEdgeInsets(top: 36, left: 28, bottom: 28, right: 28)
+
+        root.addArrangedSubview(buildGreeting())
+
+        let timeline = buildTimeline(records: records)
+        let rail = buildRightRail(records: records)
+        let columns = NSStackView(views: [timeline, rail])
+        columns.orientation = .horizontal
+        columns.alignment = .top
+        columns.spacing = 24
+        rail.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        root.addArrangedSubview(columns)
+        columns.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+        columns.heightAnchor.constraint(equalTo: root.heightAnchor, constant: -140).isActive = true
+
+        refreshStatus()
+        return root
+    }
+
+    /// Short hotkey label for the greeting chip / empty state, e.g. "right ⌥".
+    private var hotkeyShortName: String {
+        switch Config.hotkey {
+        case .rightOption: return "right ⌥"
+        case .fn: return "fn 🌐"
+        }
+    }
+
+    private func buildGreeting() -> NSView {
+        let firstName = NSFullUserName().components(separatedBy: " ").first ?? "there"
+        let greeting = NSTextField(labelWithString: "Hey \(firstName), get back into the flow with")
+        greeting.font = .systemFont(ofSize: 23, weight: .semibold)
+
+        let chip = NSTextField(labelWithString: " \(hotkeyShortName) ")
+        chip.font = .systemFont(ofSize: 15, weight: .semibold)
+        chip.textColor = .controlAccentColor
+        chip.wantsLayer = true
+        chip.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.15).cgColor
+        chip.layer?.cornerRadius = 6
+
+        let row = NSStackView(views: [greeting, chip])
+        row.orientation = .horizontal
+        row.spacing = 8
+        row.alignment = .centerY
+        return row
+    }
+
+    // MARK: - Timeline (left column)
+
+    private func buildTimeline(records: [DictationRecord]) -> NSView {
+        let recent = records.sorted { $0.ts > $1.ts }.prefix(25)
+
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 20
+        stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.edgeInsets = NSEdgeInsets(top: 36, left: 28, bottom: 28, right: 28)
 
-        stack.addArrangedSubview(buildStatsStrip())
-        stack.addArrangedSubview(header("Status"))
-        stack.addArrangedSubview(buildStatusCard())
-        stack.addArrangedSubview(header("Quick Settings"))
-        stack.addArrangedSubview(card(buildQuickToggles()))
+        if recent.isEmpty {
+            let empty = NSTextField(
+                wrappingLabelWithString: "Your dictations will appear here — hold \(hotkeyShortName) and speak."
+            )
+            empty.font = .systemFont(ofSize: 14)
+            empty.textColor = .secondaryLabelColor
+            empty.alignment = .center
+            let container = NSView()
+            empty.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(empty)
+            NSLayoutConstraint.activate([
+                empty.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+                empty.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                empty.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -40),
+            ])
+            return container
+        }
 
-        refreshStatus()
-        refreshStats()
+        let dayFormatter = DateFormatter()
+        dayFormatter.dateFormat = "MMMM d, yyyy"
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "h:mm a"
+
+        var currentDay: DateComponents?
+        let calendar = Calendar.current
+        for record in recent {
+            let day = calendar.dateComponents([.era, .year, .month, .day], from: record.ts)
+            if day != currentDay {
+                currentDay = day
+                let headerLabel = NSTextField(labelWithString: dayFormatter.string(from: record.ts).uppercased())
+                headerLabel.font = .boldSystemFont(ofSize: 11)
+                headerLabel.textColor = .secondaryLabelColor
+                let headerBox = NSView()
+                headerLabel.translatesAutoresizingMaskIntoConstraints = false
+                headerBox.addSubview(headerLabel)
+                NSLayoutConstraint.activate([
+                    headerLabel.leadingAnchor.constraint(equalTo: headerBox.leadingAnchor),
+                    headerLabel.topAnchor.constraint(equalTo: headerBox.topAnchor, constant: 16),
+                    headerLabel.bottomAnchor.constraint(equalTo: headerBox.bottomAnchor, constant: -6),
+                ])
+                stack.addArrangedSubview(headerBox)
+            }
+            let row = timelineRow(record: record, timeString: timeFormatter.string(from: record.ts).lowercased())
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        let clipDoc = FlippedView()
+        clipDoc.translatesAutoresizingMaskIntoConstraints = false
+        clipDoc.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: clipDoc.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: clipDoc.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: clipDoc.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: clipDoc.bottomAnchor),
+        ])
+        scroll.documentView = clipDoc
+        clipDoc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
+        return scroll
+    }
+
+    private func timelineRow(record: DictationRecord, timeString: String) -> NSView {
+        let time = NSTextField(labelWithString: timeString)
+        time.font = .systemFont(ofSize: 12)
+        time.textColor = .secondaryLabelColor
+        time.translatesAutoresizingMaskIntoConstraints = false
+        time.widthAnchor.constraint(equalToConstant: 60).isActive = true
+
+        let textValue = record.finalText ?? record.rawText
+        let text = NSTextField(wrappingLabelWithString: textValue)
+        text.font = .systemFont(ofSize: 13)
+        text.textColor = .labelColor
+        text.maximumNumberOfLines = 3
+        text.cell?.truncatesLastVisibleLine = true
+
+        let row = HoverRowView(copyText: textValue)
+        let content = NSStackView(views: [time, text, row.copyButton])
+        content.orientation = .horizontal
+        content.alignment = .top
+        content.spacing = 12
+        content.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: row.topAnchor, constant: 10),
+            content.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 4),
+            content.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -4),
+            content.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -10),
+        ])
+
+        let hairline = NSView()
+        hairline.wantsLayer = true
+        hairline.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(hairline)
+        NSLayoutConstraint.activate([
+            hairline.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            hairline.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            hairline.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            hairline.heightAnchor.constraint(equalToConstant: 1),
+        ])
+        return row
+    }
+
+    // MARK: - Right rail
+
+    private func buildRightRail(records: [DictationRecord]) -> NSView {
+        let total = totalWords(records: records)
+        let wordsPerMinute = wpm(records: records)
+        let streak = dayStreak(records: records, now: Date())
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 14
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let statsStack = NSStackView(views: [
+            railStat(value: "\(total)", caption: "total words"),
+            railStat(value: "\(Int(wordsPerMinute.rounded()))", caption: "wpm"),
+            railStat(value: "\(streak)", caption: "day streak"),
+        ])
+        statsStack.orientation = .vertical
+        statsStack.alignment = .leading
+        statsStack.spacing = 12
+        let statsCard = card(statsStack)
+        stack.addArrangedSubview(statsCard)
+        statsCard.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        let profileCard = buildVoiceProfileCard(totalWords: total)
+        stack.addArrangedSubview(profileCard)
+        profileCard.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        let statusCard = buildCompactStatusCard()
+        stack.addArrangedSubview(statusCard)
+        statusCard.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
         return stack
+    }
+
+    /// Big serif number over a small caption — the Wispr-style rail stat.
+    private func railStat(value: String, caption: String) -> NSView {
+        let number = NSTextField(labelWithString: value)
+        number.font = serifFont(ofSize: 30, weight: .semibold)
+        let label = NSTextField(labelWithString: caption)
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [number, label])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 1
+        return stack
+    }
+
+    private func serifFont(ofSize size: CGFloat, weight: NSFont.Weight) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size, weight: weight)
+        guard let descriptor = base.fontDescriptor.withDesign(.serif),
+              let serif = NSFont(descriptor: descriptor, size: size) else { return base }
+        return serif
+    }
+
+    private func buildVoiceProfileCard(totalWords total: Int) -> NSView {
+        let title = NSTextField(labelWithString: "Your Voice Profile")
+        title.font = .boldSystemFont(ofSize: 13)
+
+        let remaining = wordsToNextMilestone(totalWords: total)
+        let progress = Double(1000 - remaining) / 1000.0
+
+        let track = NSView()
+        track.wantsLayer = true
+        track.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+        track.layer?.cornerRadius = 2
+        track.translatesAutoresizingMaskIntoConstraints = false
+        track.heightAnchor.constraint(equalToConstant: 4).isActive = true
+        let fill = NSView()
+        fill.wantsLayer = true
+        fill.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        fill.layer?.cornerRadius = 2
+        fill.translatesAutoresizingMaskIntoConstraints = false
+        track.addSubview(fill)
+        NSLayoutConstraint.activate([
+            fill.leadingAnchor.constraint(equalTo: track.leadingAnchor),
+            fill.topAnchor.constraint(equalTo: track.topAnchor),
+            fill.bottomAnchor.constraint(equalTo: track.bottomAnchor),
+            fill.widthAnchor.constraint(equalTo: track.widthAnchor, multiplier: max(0.01, progress)),
+        ])
+
+        let caption = NSTextField(labelWithString: "Unlocks in \(remaining) words")
+        caption.font = .systemFont(ofSize: 11)
+        caption.textColor = .secondaryLabelColor
+
+        let stack = NSStackView(views: [title, track, caption])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        track.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        let container = card(stack)
+        let click = NSClickGestureRecognizer(target: self, action: #selector(voiceProfileCardTapped))
+        container.addGestureRecognizer(click)
+        return container
+    }
+
+    @objc private func voiceProfileCardTapped() {
+        selectTab(.voiceProfile)
+    }
+
+    private func buildCompactStatusCard() -> NSView {
+        let parakeet = statusRow("Parakeet")
+        let whisper = statusRow("Whisper server")
+        let ollama = statusRow("Ollama")
+        let mic = statusRow("Microphone")
+        parakeetLabel = parakeet.1
+        whisperLabel = whisper.1
+        ollamaLabel = ollama.1
+        micLabel = mic.1
+        parakeetDot = parakeet.2
+        whisperDot = whisper.2
+        ollamaDot = ollama.2
+        micDot = mic.2
+
+        let stack = NSStackView(views: [parakeet.0, whisper.0, ollama.0, mic.0, buildQuickToggles()])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        return card(stack, padding: 12)
     }
 
     private func header(_ text: String) -> NSView {
@@ -269,26 +551,6 @@ final class DashboardController: NSObject, NSWindowDelegate {
         row.spacing = 8
         row.alignment = .centerY
         return (row, value, dot)
-    }
-
-    private func buildStatusCard() -> NSView {
-        let parakeet = statusRow("Parakeet")
-        let whisper = statusRow("Whisper server")
-        let ollama = statusRow("Ollama")
-        let mic = statusRow("Microphone")
-        parakeetLabel = parakeet.1
-        whisperLabel = whisper.1
-        ollamaLabel = ollama.1
-        micLabel = mic.1
-        parakeetDot = parakeet.2
-        whisperDot = whisper.2
-        ollamaDot = ollama.2
-        micDot = mic.2
-
-        let grid = NSGridView(views: [[parakeet.0, ollama.0], [whisper.0, mic.0]])
-        grid.rowSpacing = 10
-        grid.columnSpacing = 24
-        return card(grid)
     }
 
     private func setStatus(dot: NSView?, label: NSTextField?, ok: Bool, okText: String, badText: String) {
@@ -405,60 +667,6 @@ final class DashboardController: NSObject, NSWindowDelegate {
         Config.openDashboardOnLaunch = sender.state == .on
     }
 
-    private func buildStatsStrip() -> NSView {
-        let today = heroStatCard("today", &todayWordsLabel)
-        let week = heroStatCard("this week", &weekWordsLabel)
-        let saved = heroStatCard("time saved", &timeSavedLabel, sub: &timeSavedSubLabel)
-        let p50 = heroStatCard("p50 latency", &p50LatencyLabel, sub: &latencySubLabel)
-        let row = NSStackView(views: [today, week, saved, p50])
-        row.orientation = .horizontal
-        row.distribution = .fillEqually
-        row.spacing = 14
-        return row
-    }
-
-    /// Big bold number + small caption, optionally with a secondary detail
-    /// line underneath (e.g. "≈3.2x faster than typing").
-    private func heroStatCard(
-        _ label: String,
-        _ target: inout NSTextField?,
-        sub subTarget: inout NSTextField?
-    ) -> NSView {
-        let value = NSTextField(labelWithString: "—")
-        value.font = NSFont.monospacedDigitSystemFont(ofSize: 28, weight: .bold)
-        target = value
-        let caption = NSTextField(labelWithString: label)
-        caption.font = .systemFont(ofSize: 12)
-        caption.textColor = .secondaryLabelColor
-        let sub = NSTextField(labelWithString: "")
-        sub.font = .systemFont(ofSize: 11)
-        sub.textColor = .tertiaryLabelColor
-        subTarget = sub
-        let stack = NSStackView(views: [value, caption, sub])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 2
-        return card(stack, padding: 16)
-    }
-
-    private func heroStatCard(_ label: String, _ target: inout NSTextField?) -> NSView {
-        var noSub: NSTextField?
-        return heroStatCard(label, &target, sub: &noSub)
-    }
-
-    private func refreshStats() {
-        let records = VoiceProfileStore.loadAllRecords()
-        let stats = computeDashboardStats(records: records, now: Date())
-        todayWordsLabel?.stringValue = "\(stats.todayWords)"
-        weekWordsLabel?.stringValue = "\(stats.weekWords)"
-        timeSavedLabel?.stringValue = String(format: "%.0fm", stats.timeSavedMinutes)
-        p50LatencyLabel?.stringValue = String(format: "%.1fs", stats.p50TakeLatencySec)
-        latencySubLabel?.stringValue = String(format: "avg %.1fs · p95 %.1fs", stats.avgLatencySec, stats.p95TakeLatencySec)
-
-        let speedup = speedupMultiplier(words: stats.weekWords, speakingMinutes: stats.speakingMinutes)
-        timeSavedSubLabel?.stringValue = speedup > 0 ? String(format: "≈%.1fx faster than typing", speedup) : ""
-    }
-
     // MARK: - Scratchpad tab (fallback: opens the shared window)
 
     private func buildScratchpadTab() -> NSView {
@@ -481,5 +689,58 @@ final class DashboardController: NSObject, NSWindowDelegate {
 
     @objc private func openScratchpadTapped() {
         onOpenScratchpad?()
+    }
+}
+
+/// Scroll document view that lays out top-down so the timeline starts at the top.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+/// Timeline row that shows a copy button only while hovered.
+private final class HoverRowView: NSView {
+    let copyButton: NSButton
+    private let copyText: String
+
+    init(copyText: String) {
+        self.copyText = copyText
+        let image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
+        copyButton = NSButton(image: image ?? NSImage(), target: nil, action: nil)
+        copyButton.isBordered = false
+        copyButton.bezelStyle = .inline
+        copyButton.isHidden = true
+        copyButton.translatesAutoresizingMaskIntoConstraints = false
+        copyButton.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        copyButton.target = self
+        copyButton.action = #selector(copyTapped)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func copyTapped() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(copyText, forType: .string)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        copyButton.isHidden = false
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        copyButton.isHidden = true
     }
 }

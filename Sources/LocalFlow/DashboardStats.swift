@@ -77,3 +77,64 @@ func computeDashboardStats(records: [DictationRecord], now: Date) -> DashboardSt
         speakingMinutes: speakingMinutes
     )
 }
+
+// MARK: - Home tab (Wispr-style) pure helpers
+
+/// Sum of `finalWords` across every record — the lifetime word count shown
+/// on the Home tab's right rail.
+func totalWords(records: [DictationRecord]) -> Int {
+    records.reduce(0) { $0 + $1.finalWords }
+}
+
+/// Words per minute of actual speaking time: total words / total speaking
+/// minutes. Returns 0 rather than dividing by zero when there's no recorded
+/// speaking time.
+func wpm(records: [DictationRecord]) -> Double {
+    let totalDurationSec = records.reduce(0.0) { $0 + $1.durationSec }
+    guard totalDurationSec > 0 else { return 0 }
+    let minutes = totalDurationSec / 60.0
+    return Double(totalWords(records: records)) / minutes
+}
+
+/// Consecutive calendar days, ending today or yesterday, with at least one
+/// dictation. Walks backward from today; if today has no dictations but
+/// yesterday does, the streak still counts (ending yesterday). If neither
+/// today nor yesterday has a dictation, the streak is 0.
+func dayStreak(records: [DictationRecord], now: Date, calendar: Calendar = .current) -> Int {
+    guard !records.isEmpty else { return 0 }
+    let daysWithRecords: Set<DateComponents> = Set(records.map {
+        calendar.dateComponents([.era, .year, .month, .day], from: $0.ts)
+    })
+    let today = calendar.startOfDay(for: now)
+
+    func hasRecord(daysAgo: Int) -> Bool {
+        guard let day = calendar.date(byAdding: .day, value: -daysAgo, to: today) else { return false }
+        let components = calendar.dateComponents([.era, .year, .month, .day], from: day)
+        return daysWithRecords.contains(components)
+    }
+
+    var startOffset = 0
+    if !hasRecord(daysAgo: 0) {
+        guard hasRecord(daysAgo: 1) else { return 0 }
+        startOffset = 1
+    }
+
+    var streak = 0
+    var offset = startOffset
+    while hasRecord(daysAgo: offset) {
+        streak += 1
+        offset += 1
+    }
+    return streak
+}
+
+/// Words remaining until the next 1000-word voice-profile milestone. Always
+/// in the range (0, 1000]: `totalWords == 0` returns 1000 (the first
+/// milestone is a full 1000 words away), and an exact multiple of 1000
+/// returns 1000 (the milestone just hit was reached, so the *next* one is a
+/// full 1000 words further).
+func wordsToNextMilestone(totalWords: Int) -> Int {
+    guard totalWords > 0 else { return 1000 }
+    let remainder = totalWords % 1000
+    return remainder == 0 ? 1000 : 1000 - remainder
+}
