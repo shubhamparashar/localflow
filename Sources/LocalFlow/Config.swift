@@ -11,6 +11,14 @@ enum HotkeyChoice: String, CaseIterable {
         case .fn: return "Hold Fn (🌐)"
         }
     }
+
+    /// Compact form for the Home tab's greeting chip, e.g. "right ⌥".
+    var shortLabel: String {
+        switch self {
+        case .rightOption: return "right ⌥"
+        case .fn: return "fn 🌐"
+        }
+    }
 }
 
 /// How aggressively `OllamaCleaner` rewrites a transcript. `none` skips
