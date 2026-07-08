@@ -365,6 +365,12 @@ final class OverlayHUD: NSObject {
         effect.state = .active
         effect.appearance = NSAppearance(named: .darkAqua)
         effect.maskImage = Self.roundedRectMask(cornerRadius: Self.cornerRadius)
+        // Views don't clip subviews by default on macOS 14 — without this the
+        // badge/label can render outside the capsule as detached fragments
+        // while the panel frame animates.
+        effect.wantsLayer = true
+        effect.layer?.masksToBounds = true
+        effect.layer?.cornerRadius = Self.cornerRadius
         effect.autoresizingMask = [.width, .height]
         effect.onClick = { [weak self] in self?.onToggle?() }
         effect.onHoverChange = { [weak self] hovering in self?.hoverChanged(hovering) }
@@ -770,12 +776,11 @@ final class OverlayHUD: NSObject {
     /// Assigns `frame` to `view`, going through the animator proxy (so it
     /// participates in an enclosing `NSAnimationContext` group) only when
     /// `animated` is true; otherwise it's an instant, unanimated set.
+    /// Subviews always jump straight to their target frame — animating them
+    /// on a separate track from the panel-frame animation is what tore the
+    /// pill apart visually. The panel resize is the only animated element.
     private func setFrame(_ frame: NSRect, on view: NSView, animated: Bool) {
-        if animated {
-            view.animator().frame = frame
-        } else {
-            view.frame = frame
-        }
+        view.frame = frame
     }
 
     private func layoutContent(animated: Bool) {
