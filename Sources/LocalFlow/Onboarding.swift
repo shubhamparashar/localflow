@@ -68,7 +68,8 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         stack.setCustomSpacing(20, after: stack.arrangedSubviews.last!)
 
         let getStarted = NSButton(title: "Get Started", target: self, action: #selector(finish))
-        getStarted.bezelStyle = .rounded
+        getStarted.bezelStyle = .push
+        getStarted.controlSize = .large
         getStarted.keyEquivalent = "\r"
         stack.addArrangedSubview(getStarted)
 
@@ -101,7 +102,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
     private func title(_ text: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
-        label.font = NSFont.systemFont(ofSize: 22, weight: .bold)
+        label.font = NSFont.systemFont(ofSize: 24, weight: .bold)
         return label
     }
 
@@ -126,16 +127,36 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         return label
     }
 
+    /// A small circled badge (number or SF Symbol) used as a step marker.
+    private func circledBadge(_ content: NSView) -> NSView {
+        let circle = NSView(frame: NSRect(x: 0, y: 0, width: 24, height: 24))
+        circle.wantsLayer = true
+        circle.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.15).cgColor
+        circle.layer?.cornerRadius = 12
+        circle.translatesAutoresizingMaskIntoConstraints = false
+        circle.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        circle.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        content.translatesAutoresizingMaskIntoConstraints = false
+        circle.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.centerXAnchor.constraint(equalTo: circle.centerXAnchor),
+            content.centerYAnchor.constraint(equalTo: circle.centerYAnchor),
+        ])
+        return circle
+    }
+
     private func step(_ number: String, _ text: String) -> NSStackView {
         let numberLabel = NSTextField(labelWithString: number)
-        numberLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
-        numberLabel.setContentHuggingPriority(.required, for: .horizontal)
+        numberLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
+        numberLabel.textColor = .controlAccentColor
+        let badge = circledBadge(numberLabel)
+        badge.setContentHuggingPriority(.required, for: .horizontal)
         let body = NSTextField(wrappingLabelWithString: text)
         body.font = NSFont.systemFont(ofSize: 13)
-        let row = NSStackView(views: [numberLabel, body])
+        let row = NSStackView(views: [badge, body])
         row.orientation = .horizontal
-        row.alignment = .firstBaseline
-        row.spacing = 8
+        row.alignment = .centerY
+        row.spacing = 10
         return row
     }
 
@@ -144,7 +165,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         action: Selector,
         statusOut: (NSTextField) -> Void,
         buttonOut: (NSButton) -> Void
-    ) -> NSStackView {
+    ) -> NSView {
         let name = NSTextField(labelWithString: label)
         name.font = NSFont.systemFont(ofSize: 13)
         let status = NSTextField(labelWithString: "")
@@ -157,7 +178,22 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10
-        return row
+
+        let card = NSView()
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor
+        card.layer?.cornerRadius = 10
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.separatorColor.cgColor
+        row.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+        ])
+        return card
     }
 
     // MARK: - Permission state

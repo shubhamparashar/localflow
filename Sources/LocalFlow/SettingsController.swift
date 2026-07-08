@@ -85,10 +85,24 @@ final class SettingsController: NSObject {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
+        stack.spacing = 18
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        stack.addArrangedSubview(header("Dictation"))
+        stack.addArrangedSubview(section("Dictation", dictationSection()))
+        stack.addArrangedSubview(section("AI Cleanup", cleanupSection()))
+        stack.addArrangedSubview(section("Flow-Bar", flowBarSection()))
+        stack.addArrangedSubview(section("System", systemSection()))
+        stack.addArrangedSubview(section("Word Lists", wordListsSection()))
+        stack.addArrangedSubview(section("Import Glossary Terms", importSection()))
+
+        return stack
+    }
+
+    private func dictationSection() -> NSView {
+        let group = NSStackView()
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 8
 
         let hotkey = NSPopUpButton(frame: .zero, pullsDown: false)
         for choice in HotkeyChoice.allCases {
@@ -98,7 +112,7 @@ final class SettingsController: NSObject {
         hotkey.target = self
         hotkey.action = #selector(hotkeyChanged)
         hotkeyPopup = hotkey
-        stack.addArrangedSubview(labeled("Push-to-talk:", hotkey))
+        group.addArrangedSubview(labeled("Push-to-talk:", hotkey))
 
         let language = NSPopUpButton(frame: .zero, pullsDown: false)
         for entry in Self.languages {
@@ -108,17 +122,24 @@ final class SettingsController: NSObject {
         language.target = self
         language.action = #selector(languageChanged)
         languagePopup = language
-        stack.addArrangedSubview(labeled("Language:", language))
+        group.addArrangedSubview(labeled("Language:", language))
 
         handsFreeCheck = checkbox("Tap for hands-free (VAD auto-stop)", #selector(handsFreeChanged))
-        stack.addArrangedSubview(handsFreeCheck!)
+        group.addArrangedSubview(handsFreeCheck!)
         smartSpacingCheck = checkbox("Add a space after each dictation", #selector(smartSpacingChanged))
-        stack.addArrangedSubview(smartSpacingCheck!)
+        group.addArrangedSubview(smartSpacingCheck!)
+        return group
+    }
 
-        stack.addArrangedSubview(header("AI Cleanup"))
+    private func cleanupSection() -> NSView {
+        let group = NSStackView()
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 8
+
         cleanupCheck = checkbox("Clean up transcripts with Ollama", #selector(cleanupChanged))
-        stack.addArrangedSubview(cleanupCheck!)
-        stack.addArrangedSubview(note("Kept warm; roughly 1.5s per cleanup. Off = instant raw text."))
+        group.addArrangedSubview(cleanupCheck!)
+        group.addArrangedSubview(note("Kept warm; roughly 1.5s per cleanup. Off = instant raw text."))
 
         let level = NSPopUpButton(frame: .zero, pullsDown: false)
         for choice in CleanupLevel.allCases {
@@ -128,39 +149,75 @@ final class SettingsController: NSObject {
         level.target = self
         level.action = #selector(cleanupLevelChanged)
         cleanupLevelPopup = level
-        stack.addArrangedSubview(labeled("Cleanup level:", level))
+        group.addArrangedSubview(labeled("Cleanup level:", level))
+        return group
+    }
 
-        stack.addArrangedSubview(header("Flow-Bar"))
+    private func flowBarSection() -> NSView {
+        let group = NSStackView()
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 8
+
         showFlowBarCheck = checkbox("Show the always-on Flow-Bar pill", #selector(showFlowBarChanged))
-        stack.addArrangedSubview(showFlowBarCheck!)
+        group.addArrangedSubview(showFlowBarCheck!)
         startSoundCheck = checkbox("Play a sound when recording starts", #selector(startSoundChanged))
-        stack.addArrangedSubview(startSoundCheck!)
+        group.addArrangedSubview(startSoundCheck!)
+        return group
+    }
 
-        stack.addArrangedSubview(header("System"))
+    private func systemSection() -> NSView {
         loginCheck = checkbox("Start LocalFlow at login", #selector(loginChanged))
-        stack.addArrangedSubview(loginCheck!)
+        return loginCheck!
+    }
 
-        stack.addArrangedSubview(header("Word lists"))
+    private func wordListsSection() -> NSView {
         let glossaryButton = NSButton(title: "Edit Glossary…", target: self, action: #selector(editGlossary))
         let snippetsButton = NSButton(title: "Edit Snippets…", target: self, action: #selector(editSnippets))
         let categoriesButton = NSButton(title: "Edit App Categories…", target: self, action: #selector(editCategories))
         [glossaryButton, snippetsButton, categoriesButton].forEach { $0.bezelStyle = .rounded }
-        let fileRow = NSStackView(views: [glossaryButton, snippetsButton, categoriesButton])
-        fileRow.orientation = .horizontal
-        fileRow.spacing = 8
-        stack.addArrangedSubview(fileRow)
+        let row = NSStackView(views: [glossaryButton, snippetsButton, categoriesButton])
+        row.orientation = .horizontal
+        row.spacing = 8
+        return row
+    }
 
-        stack.addArrangedSubview(header("Import Glossary Terms"))
+    private func importSection() -> NSView {
         let contactsButton = NSButton(title: "From Contacts…", target: self, action: #selector(importFromContacts))
         let gitButton = NSButton(title: "From Git Authors…", target: self, action: #selector(importFromGitAuthors))
         let identifiersButton = NSButton(title: "From Repo Code…", target: self, action: #selector(importFromRepoIdentifiers))
         [contactsButton, gitButton, identifiersButton].forEach { $0.bezelStyle = .rounded }
-        let importRow = NSStackView(views: [contactsButton, gitButton, identifiersButton])
-        importRow.orientation = .horizontal
-        importRow.spacing = 8
-        stack.addArrangedSubview(importRow)
+        let row = NSStackView(views: [contactsButton, gitButton, identifiersButton])
+        row.orientation = .horizontal
+        row.spacing = 8
+        return row
+    }
 
-        return stack
+    /// An uppercase section header above a rounded card containing `content`
+    /// — the "grouped System Settings" look for the settings window.
+    private func section(_ title: String, _ content: NSView) -> NSView {
+        let wrapper = NSStackView()
+        wrapper.orientation = .vertical
+        wrapper.alignment = .leading
+        wrapper.spacing = 6
+        wrapper.addArrangedSubview(header(title))
+
+        let card = NSView()
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor
+        card.layer?.cornerRadius = 10
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.separatorColor.cgColor
+        content.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
+            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14),
+        ])
+        wrapper.addArrangedSubview(card)
+        return wrapper
     }
 
     private func header(_ text: String) -> NSView {

@@ -56,20 +56,30 @@ enum HistoryView {
             : entries
         return """
         <!doctype html><html><head><meta charset="utf-8"><title>LocalFlow History</title><style>
-        body { font-family: -apple-system, system-ui; background: #111418; color: #e8eaed; margin: 0 auto; max-width: 780px; padding: 32px 20px; }
-        h1 { font-size: 22px; } .sub { color: #9aa0a6; font-size: 13px; margin-bottom: 24px; }
-        .entry { background: #1b1f24; border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
-        .meta { color: #9aa0a6; font-size: 12px; margin-bottom: 8px; }
-        .label { color: #8ab4f8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; display: flex; justify-content: space-between; }
+        :root {
+            --bg: #f5f5f7; --fg: #1d1d1f; --sub: #6e6e73; --card: #ffffff; --border: #e5e5e7;
+            --accent: #0066cc; --btn: #eceef1; --btn-hover: #dfe2e6; --raw: #6e6e73;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root { --bg: #1e1e1e; --fg: #e8eaed; --sub: #9aa0a6; --card: #262626; --border: #3a3a3c;
+                --accent: #8ab4f8; --btn: #2b3138; --btn-hover: #3a424b; --raw: #b8bcc2; }
+        }
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+            background: var(--bg); color: var(--fg); margin: 0 auto; max-width: 780px; padding: 32px 20px; }
+        h1 { font-size: 22px; } .sub { color: var(--sub); font-size: 13px; margin-bottom: 24px; }
+        .entry { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+        .meta { color: var(--sub); font-size: 12px; margin-bottom: 8px; }
+        .label { color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; display: flex; justify-content: space-between; }
         .text { white-space: pre-wrap; font-size: 14px; line-height: 1.45; }
-        .raw .text { color: #b8bcc2; }
-        button { background: #2b3138; color: #e8eaed; border: none; border-radius: 6px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
-        button:hover { background: #3a424b; }
-        .empty { color: #9aa0a6; }
-        #search { width: 100%; box-sizing: border-box; background: #1b1f24; border: 1px solid #2b3138; color: #e8eaed;
-            border-radius: 8px; padding: 8px 12px; font-size: 13px; margin-bottom: 16px; }
-        #search:focus { outline: none; border-color: #8ab4f8; }
-        #noResults { display: none; color: #9aa0a6; }
+        .raw .text { color: var(--raw); }
+        button { background: var(--btn); color: var(--fg); border: none; border-radius: 6px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+        button:hover { background: var(--btn-hover); }
+        .empty { color: var(--sub); }
+        #search { width: 100%; background: var(--card); border: 1px solid var(--border); color: var(--fg);
+            border-radius: 10px; padding: 9px 14px; font-size: 13px; margin-bottom: 16px; }
+        #search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+        #noResults { display: none; color: var(--sub); }
         </style></head><body>
         <h1>Dictation History</h1>
         <div class="sub">Last \(records.count) dictations · newest first · "Copy raw" recovers your exact words when the AI cleanup got it wrong</div>
