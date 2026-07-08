@@ -194,6 +194,12 @@ final class OverlayHUD: NSObject {
     /// Supplies whether capture mode is currently on (for the menu checkmark).
     var captureModeIsActive: (() -> Bool)?
 
+    /// Fires when "Meeting Notes" is toggled from the pill's right-click menu.
+    var onToggleMeeting: (() -> Void)?
+
+    /// Supplies whether Meeting Mode is currently on (for the menu checkmark).
+    var meetingModeIsActive: (() -> Bool)?
+
     // MARK: - State
 
     private var panel: NSPanel!
@@ -525,6 +531,14 @@ final class OverlayHUD: NSObject {
         captureItem.target = self
         captureItem.state = (captureModeIsActive?() ?? false) ? .on : .off
         menu.addItem(captureItem)
+        let meetingItem: NSMenuItem = NSMenuItem(
+            title: "Meeting Notes",
+            action: #selector(menuToggleMeeting),
+            keyEquivalent: ""
+        )
+        meetingItem.target = self
+        meetingItem.state = (meetingModeIsActive?() ?? false) ? .on : .off
+        menu.addItem(meetingItem)
         menu.addItem(.separator())
         let hideItem: NSMenuItem = NSMenuItem(
             title: "Hide Flow-Bar for 1 hour",
@@ -548,6 +562,7 @@ final class OverlayHUD: NSObject {
     @objc private func menuQuit() { onQuit?() }
     @objc private func menuDictateToClaude() { onDictateToClaude?() }
     @objc private func menuToggleCapture() { onToggleCapture?() }
+    @objc private func menuToggleMeeting() { onToggleMeeting?() }
     @objc private func menuResetPosition() { resetPosition() }
     @objc private func menuSelectLanguage(_ sender: NSMenuItem) {
         guard let code = sender.representedObject as? String else { return }

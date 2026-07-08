@@ -64,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var captureModeActive = false
     private var captureChunkCount = 0
     private var captureEmptyStreak = 0
+    private lazy var meetingSession = MeetingSession(scratchpad: scratchpad)
+    private var meetingModeActive = false
+    private var captureChunkStartedAt = Date()
     private var commandSelection: String?
     private var lastRawTranscript: String?
     private var sessionProfile: AppCategoryProfile?
@@ -139,6 +142,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.onDictateToClaude = { [weak self] in self?.startClaudePipeDictation() }
         hud.onToggleCapture = { [weak self] in self?.toggleCaptureMode() }
         hud.captureModeIsActive = { [weak self] in self?.captureModeActive ?? false }
+        hud.onToggleMeeting = { [weak self] in self?.toggleMeetingMode() }
+        hud.meetingModeIsActive = { [weak self] in self?.meetingModeActive ?? false }
         settings.onChanged = { [weak self] in
             self?.rebuildMenu()
             self?.refreshIdleHUD()
@@ -204,6 +209,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Hold = push-to-talk (release stops). Quick tap = hands-free: keep
     /// recording until VAD detects the utterance ended, or a second tap.
     private func hotkeyPressed() {
+        if meetingModeActive {
+            // The hotkey is the panic button while capturing — end the loop.
+            stopMeetingMode()
+            return
+        }
         if captureModeActive {
             // The hotkey is the panic button while capturing — end the loop.
             setCaptureMode(false)
@@ -464,6 +474,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ready. Chunk-level labeling only — the whole chunk gets one label
     /// (its dominant speaker by spoken duration), not per-word attribution.
     private func appendCaptureChunk(text: String, wav: Data) {
+        if meetingModeActive {
+            // The mic is always the user — no diarization needed for this side.
+            meetingSession.appendMicChunk(text: text, chunkStartedAt: captureChunkStartedAt)
+            return
+        }
         guard Config.speakerLabelsEnabled, SpeakerDiarizer.shared.isReady else {
             scratchpad.append(text + "\n\n")
             return
@@ -504,6 +519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startCaptureTake() {
         guard captureModeActive, state == .idle || state == .transcribing else { return }
+        captureChunkStartedAt = Date()
         handsFreeArmed = false
         sessionIsCommand = false
         sessionIsClaudePipe = false
@@ -518,6 +534,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setCaptureMode(_ on: Bool) {
+        guard !meetingModeActive else { return }
         guard captureModeActive != on else { return }
         captureModeActive = on
         if on {
@@ -541,6 +558,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         rebuildMenu()
+    }
+
+    // MARK: - Meeting Mode (mic + system audio notes into the Scratchpad)
+
+    /// Meeting Mode reuses the Capture Mode mic loop verbatim (chunk timing,
+    /// hands-free VAD, the 3-empty-takes stop) and layers a
+    /// `MeetingSession` on top for the system-audio half and the
+    /// meeting-specific Scratchpad framing.
+    private func startMeetingMode() {
+        guard !meetingModeActive, !captureModeActive else { return }
+        meetingModeActive = true
+        captureModeActive = true
+        captureChunkCount = 0
+        captureEmptyStreak = 0
+        Log.info("Meeting mode: started")
+        meetingSession.start()
+        startCaptureTake()
+        rebuildMenu()
+    }
+
+    private func stopMeetingMode() {
+        guard meetingModeActive else { return }
+        meetingModeActive = false
+        captureModeActive = false
+        Log.info("Meeting mode: stopped after \(captureChunkCount) mic chunks")
+        if state == .recording, sessionIsCapture || handsFreeArmed {
+            endDictation()
+        }
+        meetingSession.stop()
+        rebuildMenu()
+    }
+
+    @objc private func toggleMeetingMode() {
+        if meetingModeActive {
+            stopMeetingMode()
+        } else {
+            startMeetingMode()
+        }
     }
 
     @objc private func selectCaptureLanguage(_ sender: NSMenuItem) {
@@ -871,6 +926,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         captureItem.target = self
         captureItem.state = captureModeActive ? .on : .off
         menu.addItem(captureItem)
+
+        let meetingItem = NSMenuItem(
+            title: "Meeting Notes (mic + system audio)",
+            action: #selector(toggleMeetingMode),
+            keyEquivalent: ""
+        )
+        meetingItem.target = self
+        meetingItem.state = meetingModeActive ? .on : .off
+        menu.addItem(meetingItem)
 
         let captureLangRoot = NSMenuItem(title: "Capture Language", action: nil, keyEquivalent: "")
         let captureLangMenu = NSMenu()

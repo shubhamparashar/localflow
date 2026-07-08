@@ -257,6 +257,11 @@ enum Config {
         return choice == "same" ? dictationLanguage : choice
     }
 
+    /// Runtime-only Meeting Mode flag — unlike every other switch in this
+    /// file, deliberately NOT persisted: a meeting session shouldn't resume
+    /// itself on the next launch.
+    static var meetingModeActive = false
+
     static var quietModeEnabled: Bool {
         get { defaults.object(forKey: "quietModeEnabled") as? Bool ?? false }
         set { defaults.set(newValue, forKey: "quietModeEnabled") }

@@ -293,7 +293,10 @@ final class AudioRecorder {
         }
     }
 
-    private static func wavData(samples: [Float], sampleRate: Int) -> Data {
+    /// Encodes 16 kHz mono Float32 samples as 16-bit PCM WAV. Shared with
+    /// `SystemAudioRecorder` so both mic and system-audio chunks feed the
+    /// same transcription path.
+    static func wavData(samples: [Float], sampleRate: Int) -> Data {
         let dataSize = samples.count * 2
         var data = Data(capacity: 44 + dataSize)
         data.append(contentsOf: Array("RIFF".utf8))
