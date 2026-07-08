@@ -320,7 +320,9 @@ final class DashboardController: NSObject, NSWindowDelegate {
         let timeFormatter = DateFormatter()
         timeFormatter.dateFormat = "h:mm a"
 
-        var currentDay: DateComponents?
+        var currentDay: DateComponents? = recent.first.map {
+            Calendar.current.dateComponents([.era, .year, .month, .day], from: $0.ts)
+        }
         let calendar = Calendar.current
         for record in recent {
             let day = calendar.dateComponents([.era, .year, .month, .day], from: record.ts)
@@ -739,6 +741,8 @@ final class DashboardController: NSObject, NSWindowDelegate {
 
     private func labeled(_ text: String, _ control: NSView) -> NSStackView {
         let label = NSTextField(labelWithString: text)
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        control.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         let row = NSStackView(views: [label, control])
         row.orientation = .horizontal
         row.spacing = 8
