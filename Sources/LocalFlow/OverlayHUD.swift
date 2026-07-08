@@ -149,11 +149,17 @@ final class OverlayHUD: NSObject {
     private static let iconSize: CGFloat = 20
     private static let elementGap: CGFloat = 8
     private static let elapsedWidth: CGFloat = 36
-    private static let barCount: Int = 5
+    private static let barCount: Int = 16
     private static let barWidth: CGFloat = 3
-    private static let barSpacing: CGFloat = 3
-    private static let barHeights: [CGFloat] = [8, 11, 14, 17, 20]
-    private static let inactiveBarHeight: CGFloat = 4
+    private static let barSpacing: CGFloat = 2
+    private static let minBarHeight: CGFloat = 3
+    private static let maxBarHeight: CGFloat = 22
+    private static let meterWidth: CGFloat =
+        CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
+    /// Longest a live caption is allowed to render before the pill truncates
+    /// its head, keeping the newest (most relevant) words on screen.
+    private static let maxCaptionWidth: CGFloat = 360
+    private static let handsFreeDotDiameter: CGFloat = 6
     // Calibrated to conversational speech through a laptop mic
     // (~-45…-20 dBFS); a square-root curve keeps the bars lively in the
     // quiet half of the range instead of saturating only when shouting.
@@ -192,11 +198,19 @@ final class OverlayHUD: NSObject {
 
     private var panel: NSPanel!
     private var contentView: HUDContentView!
+    private var washView: NSView!
+    private var borderView: NSView!
     private var iconView: NSImageView!
     private var textLabel: NSTextField!
     private var elapsedLabel: NSTextField!
     private var badgeLabel: NSTextField!
+    private var handsFreeDotView: NSView!
+    private var shimmerView: NSView!
     private var barViews: [NSView] = []
+    /// Ring buffer of the last `barCount` mapped bar heights, oldest first —
+    /// each `updateLevel` call shifts it, producing a scrolling waveform
+    /// rather than every bar mirroring the instantaneous level.
+    private var levelHistory: [CGFloat] = Array(repeating: OverlayHUD.minBarHeight, count: OverlayHUD.barCount)
     private var elapsedTimer: Timer?
     private var recordingStartedAt: Date?
     private var currentState: HUDState?
@@ -214,6 +228,12 @@ final class OverlayHUD: NSObject {
     /// True while the user is physically dragging the pill; suppresses automatic
     /// repositioning so a state change can't yank it away from the cursor.
     private var isDraggingPill = false
+
+    /// System-wide "reduce motion" preference: swaps animated transitions for
+    /// instant ones and disables the shimmer/waveform animations.
+    private var reducedMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
 
     // MARK: - Public API
 
@@ -253,20 +273,21 @@ final class OverlayHUD: NSObject {
         let continuingRecording: Bool = panel.isVisible && isRecording(currentState)
         currentState = state
         applyState(state, continuingRecording: continuingRecording)
-        layoutContent()
+        layoutContent(animated: false)
         if panel.isVisible {
-            positionPanel(initial: false)
+            positionPanel(initial: false, animated: false)
             panel.alphaValue = 1
             logShown(state)
             return
         }
-        positionPanel(initial: true)
+        positionPanel(initial: true, animated: false)
         animateIn()
         logShown(state)
     }
 
     private func hideOnMain() {
         stopTimer()
+        stopShimmer()
         recordingStartedAt = nil
         currentState = nil
         isHovering = false
@@ -304,12 +325,17 @@ final class OverlayHUD: NSObject {
                 relayout()
             }
         }
-        let clamped: Float = min(max(dbfs, Self.minDBFS), Self.maxDBFS)
-        let fraction: Float = sqrt((clamped - Self.minDBFS) / (Self.maxDBFS - Self.minDBFS))
-        let activeBars: Int = Int((fraction * Float(Self.barCount)).rounded())
-        for (index, bar) in barViews.enumerated() {
-            setBar(bar, index: index, active: index < activeBars)
-        }
+        let height: CGFloat = WaveformMapping.barHeight(
+            dbfs: dbfs,
+            minDBFS: Self.minDBFS,
+            maxDBFS: Self.maxDBFS,
+            minHeight: Self.minBarHeight,
+            maxHeight: Self.maxBarHeight
+        )
+        levelHistory.removeFirst()
+        levelHistory.append(height)
+        guard !warningActive else { return }
+        paintBars(animated: !reducedMotion)
     }
 
     // MARK: - Panel construction
@@ -347,13 +373,31 @@ final class OverlayHUD: NSObject {
         effect.onDragStateChanged = { [weak self] dragging in self?.isDraggingPill = dragging }
         effect.onBadgeClick = { [weak self] in self?.cycleLanguageBadge() }
 
+        // Bottom-most: a color wash (only visible during the warning state)
+        // sitting directly on the blur, beneath every other element.
+        washView = NSView(frame: contentRect)
+        washView.wantsLayer = true
+        washView.autoresizingMask = [.width, .height]
+        washView.layer?.cornerRadius = Self.cornerRadius
+        washView.layer?.masksToBounds = true
+        washView.layer?.backgroundColor = NSColor.clear.cgColor
+        effect.addSubview(washView)
+
         iconView = NSImageView(frame: .zero)
         iconView.imageScaling = .scaleProportionallyUpOrDown
         effect.addSubview(iconView)
 
+        handsFreeDotView = NSView(frame: .zero)
+        handsFreeDotView.wantsLayer = true
+        handsFreeDotView.layer?.cornerRadius = Self.handsFreeDotDiameter / 2
+        handsFreeDotView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        handsFreeDotView.isHidden = true
+        effect.addSubview(handsFreeDotView)
+
         textLabel = NSTextField(labelWithString: "")
         textLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         textLabel.textColor = .white
+        textLabel.cell?.lineBreakMode = .byTruncatingHead
         effect.addSubview(textLabel)
 
         elapsedLabel = NSTextField(labelWithString: "0:00")
@@ -368,15 +412,35 @@ final class OverlayHUD: NSObject {
         badgeLabel.alignment = .center
         effect.addSubview(badgeLabel)
 
-        barViews = (0..<Self.barCount).map { (_: Int) -> NSView in
+        barViews = (0..<Self.barCount).map { (index: Int) -> NSView in
             let bar: NSView = NSView(frame: .zero)
             bar.wantsLayer = true
-            bar.layer?.backgroundColor = NSColor.white.cgColor
+            bar.layer?.backgroundColor = Self.barTint(atFraction: CGFloat(index) / CGFloat(max(Self.barCount - 1, 1))).cgColor
             bar.layer?.cornerRadius = Self.barWidth / 2
-            bar.alphaValue = 0.3
+            bar.alphaValue = 1.0
             effect.addSubview(bar)
             return bar
         }
+
+        // A single soft strip that stands in for the waveform while
+        // transcribing/cleaning — a working pulse instead of a spinner.
+        shimmerView = NSView(frame: .zero)
+        shimmerView.wantsLayer = true
+        shimmerView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.35).cgColor
+        shimmerView.layer?.cornerRadius = 2
+        shimmerView.isHidden = true
+        effect.addSubview(shimmerView)
+
+        // Top-most: a hairline border. Kept as a separate, non-blurred view
+        // (rather than styling `effect`'s own layer) so the visual-effect
+        // view's translucency is untouched.
+        borderView = NSView(frame: contentRect)
+        borderView.wantsLayer = true
+        borderView.autoresizingMask = [.width, .height]
+        borderView.layer?.cornerRadius = Self.cornerRadius
+        borderView.layer?.borderWidth = 1
+        borderView.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        effect.addSubview(borderView)
 
         newPanel.contentView = effect
         contentView = effect
@@ -397,6 +461,20 @@ final class OverlayHUD: NSObject {
         image.capInsets = NSEdgeInsets(top: cornerRadius, left: cornerRadius, bottom: cornerRadius, right: cornerRadius)
         image.resizingMode = .stretch
         return image
+    }
+
+    /// Linear blend between systemBlue and systemIndigo across the bar index,
+    /// giving the waveform a subtle accent gradient instead of flat white.
+    private static func barTint(atFraction fraction: CGFloat) -> NSColor {
+        let start: NSColor = NSColor.systemBlue.usingColorSpace(.deviceRGB) ?? .white
+        let end: NSColor = NSColor.systemIndigo.usingColorSpace(.deviceRGB) ?? .white
+        let t: CGFloat = min(max(fraction, 0), 1)
+        return NSColor(
+            red: start.redComponent + (end.redComponent - start.redComponent) * t,
+            green: start.greenComponent + (end.greenComponent - start.greenComponent) * t,
+            blue: start.blueComponent + (end.blueComponent - start.blueComponent) * t,
+            alpha: 0.9
+        )
     }
 
     // MARK: - Context menu
@@ -514,13 +592,14 @@ final class OverlayHUD: NSObject {
         // Only the idle pill changes shape on hover (collapsed icon ↔ hint).
         guard isIdle(currentState) else { return }
         applyVisuals()
-        relayout()
+        relayout(animated: true)
     }
 
     // MARK: - State application
 
     private func applyState(_ state: HUDState, continuingRecording: Bool) {
         let recording: Bool = isRecording(state)
+        let busy: Bool = isBusy(state)
         if recording {
             if !continuingRecording || recordingStartedAt == nil {
                 recordingStartedAt = Date()
@@ -542,6 +621,12 @@ final class OverlayHUD: NSObject {
         for bar in barViews {
             bar.isHidden = !recording
         }
+        shimmerView.isHidden = !busy
+        if busy {
+            startShimmer()
+        } else {
+            stopShimmer()
+        }
         applyVisuals()
         if recording {
             updateElapsedText()
@@ -559,7 +644,7 @@ final class OverlayHUD: NSObject {
         switch state {
         case .idle:
             symbolName = "mic"
-            iconColor = NSColor.white.withAlphaComponent(0.85)
+            iconColor = NSColor.white.withAlphaComponent(isHovering ? 0.85 : 0.6)
             text = "Hold ⌥ or click to dictate"
             showText = isHovering
         case .recording(let handsFree):
@@ -598,6 +683,18 @@ final class OverlayHUD: NSObject {
         let showBadge: Bool = isIdle(state)
         badgeLabel.stringValue = showBadge ? Config.languageBadge(for: Config.whisperLanguage) : ""
         badgeLabel.isHidden = !showBadge
+        badgeLabel.alphaValue = (showBadge && !isHovering) ? 0.6 : 1.0
+        handsFreeDotView.isHidden = !isHandsFree(state)
+
+        let isWarningWash: Bool
+        switch state {
+        case .warning: isWarningWash = true
+        case .recording: isWarningWash = warningActive
+        default: isWarningWash = false
+        }
+        washView.layer?.backgroundColor = isWarningWash
+            ? NSColor.systemOrange.withAlphaComponent(0.15).cgColor
+            : NSColor.clear.cgColor
     }
 
     private func isRecording(_ state: HUDState?) -> Bool {
@@ -616,30 +713,72 @@ final class OverlayHUD: NSObject {
         return false
     }
 
-    // MARK: - Layout
-
-    private func relayout() {
-        guard let panel: NSPanel = panel, panel.isVisible else { return }
-        layoutContent()
-        positionPanel(initial: false)
+    /// Transcribing/cleaning are both a "the pill is working, no input" state
+    /// that shows the shimmer strip instead of the waveform.
+    private func isBusy(_ state: HUDState?) -> Bool {
+        guard let state: HUDState = state else { return false }
+        switch state {
+        case .transcribing, .cleaning: return true
+        default: return false
+        }
     }
 
-    private func layoutContent() {
+    private func isHandsFree(_ state: HUDState?) -> Bool {
+        if case .recording(let handsFree) = state { return handsFree }
+        return false
+    }
+
+    // MARK: - Layout
+
+    private func relayout(animated: Bool = false) {
+        guard let panel: NSPanel = panel, panel.isVisible else { return }
+        let shouldAnimate: Bool = animated && !reducedMotion
+        if shouldAnimate {
+            NSAnimationContext.runAnimationGroup { (context: NSAnimationContext) in
+                context.duration = 0.18
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                self.layoutContent(animated: true)
+                self.positionPanel(initial: false, animated: true)
+            }
+        } else {
+            layoutContent(animated: false)
+            positionPanel(initial: false, animated: false)
+        }
+    }
+
+    /// Assigns `frame` to `view`, going through the animator proxy (so it
+    /// participates in an enclosing `NSAnimationContext` group) only when
+    /// `animated` is true; otherwise it's an instant, unanimated set.
+    private func setFrame(_ frame: NSRect, on view: NSView, animated: Bool) {
+        if animated {
+            view.animator().frame = frame
+        } else {
+            view.frame = frame
+        }
+    }
+
+    private func layoutContent(animated: Bool) {
         textLabel.sizeToFit()
         elapsedLabel.sizeToFit()
         badgeLabel.sizeToFit()
         let recording: Bool = isRecording(currentState)
+        let busy: Bool = isBusy(currentState)
         let showText: Bool = !textLabel.isHidden && !textLabel.stringValue.isEmpty
         let showBadge: Bool = !badgeLabel.isHidden && !badgeLabel.stringValue.isEmpty
         let idleCollapsed: Bool = isIdle(currentState) && !showText
-        let meterWidth: CGFloat = CGFloat(Self.barCount) * Self.barWidth + CGFloat(Self.barCount - 1) * Self.barSpacing
+        let captionMode: Bool = recording && !recordingCaption.isEmpty
+        let textWidth: CGFloat = captionMode
+            ? min(textLabel.frame.width, Self.maxCaptionWidth)
+            : textLabel.frame.width
 
         var width: CGFloat = Self.horizontalPadding + Self.iconSize
         if showText {
-            width += Self.elementGap + textLabel.frame.width
+            width += Self.elementGap + textWidth
         }
         if recording {
-            width += Self.elementGap + Self.elapsedWidth + Self.elementGap + meterWidth
+            width += Self.elementGap + Self.elapsedWidth + Self.elementGap + Self.meterWidth
+        } else if busy {
+            width += Self.elementGap + Self.meterWidth
         }
         if showBadge {
             width += Self.elementGap + badgeLabel.frame.width
@@ -655,7 +794,11 @@ final class OverlayHUD: NSObject {
         var panelFrame: NSRect = panel.frame
         panelFrame.size = NSSize(width: width, height: Self.pillHeight)
         panelFrame.origin = NSPoint(x: center.x - width / 2, y: center.y - Self.pillHeight / 2)
-        panel.setFrame(panelFrame, display: false)
+        if animated {
+            panel.animator().setFrame(panelFrame, display: true)
+        } else {
+            panel.setFrame(panelFrame, display: false)
+        }
 
         let midY: CGFloat = Self.pillHeight / 2
 
@@ -663,68 +806,96 @@ final class OverlayHUD: NSObject {
         if idleCollapsed {
             let iconWidth: CGFloat = showBadge ? Self.iconSize + Self.elementGap + badgeLabel.frame.width : Self.iconSize
             let iconX: CGFloat = (width - iconWidth) / 2
-            iconView.frame = NSRect(
-                x: iconX,
-                y: midY - Self.iconSize / 2,
-                width: Self.iconSize,
-                height: Self.iconSize
+            setFrame(
+                NSRect(x: iconX, y: midY - Self.iconSize / 2, width: Self.iconSize, height: Self.iconSize),
+                on: iconView,
+                animated: animated
             )
-            layoutBadge(showBadge: showBadge, x: iconX + Self.iconSize + Self.elementGap, midY: midY)
+            positionHandsFreeDot(animated: animated)
+            layoutBadge(showBadge: showBadge, x: iconX + Self.iconSize + Self.elementGap, midY: midY, animated: animated)
             return
         }
 
-        iconView.frame = NSRect(
-            x: Self.horizontalPadding,
-            y: midY - Self.iconSize / 2,
-            width: Self.iconSize,
-            height: Self.iconSize
+        setFrame(
+            NSRect(x: Self.horizontalPadding, y: midY - Self.iconSize / 2, width: Self.iconSize, height: Self.iconSize),
+            on: iconView,
+            animated: animated
         )
+        positionHandsFreeDot(animated: animated)
 
         if showText {
             let labelX: CGFloat = Self.horizontalPadding + Self.iconSize + Self.elementGap
             let labelHeight: CGFloat = textLabel.frame.height
-            textLabel.frame = NSRect(
-                x: labelX,
-                y: midY - labelHeight / 2,
-                width: textLabel.frame.width,
-                height: labelHeight
+            setFrame(
+                NSRect(x: labelX, y: midY - labelHeight / 2, width: textWidth, height: labelHeight),
+                on: textLabel,
+                animated: animated
             )
         }
 
         let badgeX: CGFloat = width - Self.horizontalPadding - badgeLabel.frame.width
-        layoutBadge(showBadge: showBadge, x: badgeX, midY: midY)
+        layoutBadge(showBadge: showBadge, x: badgeX, midY: midY, animated: animated)
 
-        guard recording else { return }
-        let meterX: CGFloat = width - Self.horizontalPadding - meterWidth
-        for (index, bar) in barViews.enumerated() {
-            let barHeight: CGFloat = max(bar.frame.height, Self.inactiveBarHeight)
-            bar.frame = NSRect(
-                x: meterX + CGFloat(index) * (Self.barWidth + Self.barSpacing),
-                y: midY - barHeight / 2,
-                width: Self.barWidth,
-                height: barHeight
+        if recording {
+            let meterX: CGFloat = width - Self.horizontalPadding - Self.meterWidth
+            for (index, bar) in barViews.enumerated() {
+                let barHeight: CGFloat = max(bar.frame.height, Self.minBarHeight)
+                setFrame(
+                    NSRect(
+                        x: meterX + CGFloat(index) * (Self.barWidth + Self.barSpacing),
+                        y: midY - barHeight / 2,
+                        width: Self.barWidth,
+                        height: barHeight
+                    ),
+                    on: bar,
+                    animated: animated
+                )
+            }
+            let elapsedHeight: CGFloat = elapsedLabel.frame.height
+            setFrame(
+                NSRect(
+                    x: meterX - Self.elementGap - Self.elapsedWidth,
+                    y: midY - elapsedHeight / 2,
+                    width: Self.elapsedWidth,
+                    height: elapsedHeight
+                ),
+                on: elapsedLabel,
+                animated: animated
+            )
+        } else if busy {
+            let shimmerX: CGFloat = width - Self.horizontalPadding - Self.meterWidth
+            setFrame(
+                NSRect(x: shimmerX, y: midY - 2, width: Self.meterWidth, height: 4),
+                on: shimmerView,
+                animated: animated
             )
         }
-        let elapsedHeight: CGFloat = elapsedLabel.frame.height
-        elapsedLabel.frame = NSRect(
-            x: meterX - Self.elementGap - Self.elapsedWidth,
-            y: midY - elapsedHeight / 2,
-            width: Self.elapsedWidth,
-            height: elapsedHeight
-        )
     }
 
     /// Positions the language badge and updates the click hit-target the
     /// content view checks before falling back to the plain-pill toggle.
     /// Padded a few points beyond the visible glyph so it's easy to tap.
-    private func layoutBadge(showBadge: Bool, x: CGFloat, midY: CGFloat) {
+    private func layoutBadge(showBadge: Bool, x: CGFloat, midY: CGFloat, animated: Bool) {
         guard showBadge else {
             contentView.badgeHitFrame = nil
             return
         }
         let height: CGFloat = badgeLabel.frame.height
-        badgeLabel.frame = NSRect(x: x, y: midY - height / 2, width: badgeLabel.frame.width, height: height)
-        contentView.badgeHitFrame = badgeLabel.frame.insetBy(dx: -6, dy: -6)
+        let frame: NSRect = NSRect(x: x, y: midY - height / 2, width: badgeLabel.frame.width, height: height)
+        setFrame(frame, on: badgeLabel, animated: animated)
+        contentView.badgeHitFrame = frame.insetBy(dx: -6, dy: -6)
+    }
+
+    /// A small dot overlaid on the mic glyph's corner, shown only while
+    /// hands-free recording is active — doesn't need its own layout slot.
+    private func positionHandsFreeDot(animated: Bool) {
+        let frame: NSRect = NSRect(
+            x: iconView.frame.maxX - Self.handsFreeDotDiameter * 0.6,
+            y: iconView.frame.maxY - Self.handsFreeDotDiameter * 0.6,
+            width: Self.handsFreeDotDiameter,
+            height: Self.handsFreeDotDiameter
+        )
+        setFrame(frame, on: handsFreeDotView, animated: animated)
     }
 
     // MARK: - Positioning
@@ -732,15 +903,15 @@ final class OverlayHUD: NSObject {
     /// Restores the user's dragged position when one is saved; otherwise snaps
     /// to bottom-center of the cursor's screen (first show) or the pill's
     /// current screen (subsequent relayouts).
-    private func positionPanel(initial: Bool) {
+    private func positionPanel(initial: Bool, animated: Bool) {
         guard !isDraggingPill else { return }
         if Config.hudHasCustomPosition {
-            setCenter(clampOnScreen(Config.hudCenter))
+            setCenter(clampOnScreen(Config.hudCenter), animated: animated)
             return
         }
         let target: NSScreen? = initial ? cursorScreen() : (panel.screen ?? NSScreen.main)
         guard let screen: NSScreen = target else { return }
-        setOrigin(bottomCenteredOn: screen)
+        setOrigin(bottomCenteredOn: screen, animated: animated)
     }
 
     private func cursorScreen() -> NSScreen? {
@@ -749,21 +920,29 @@ final class OverlayHUD: NSObject {
         return hit ?? NSScreen.main ?? NSScreen.screens.first
     }
 
-    private func setOrigin(bottomCenteredOn screen: NSScreen) {
+    private func setOrigin(bottomCenteredOn screen: NSScreen, animated: Bool) {
         let screenFrame: NSRect = screen.frame
         let origin: NSPoint = NSPoint(
             x: screenFrame.midX - panel.frame.width / 2,
             y: screenFrame.minY + Self.bottomMargin
         )
-        panel.setFrameOrigin(origin)
+        if animated {
+            panel.animator().setFrameOrigin(origin)
+        } else {
+            panel.setFrameOrigin(origin)
+        }
     }
 
-    private func setCenter(_ center: CGPoint) {
+    private func setCenter(_ center: CGPoint, animated: Bool) {
         let origin: NSPoint = NSPoint(
             x: center.x - panel.frame.width / 2,
             y: center.y - panel.frame.height / 2
         )
-        panel.setFrameOrigin(origin)
+        if animated {
+            panel.animator().setFrameOrigin(origin)
+        } else {
+            panel.setFrameOrigin(origin)
+        }
     }
 
     /// Keeps a saved center inside some screen's visible area so a position
@@ -803,7 +982,7 @@ final class OverlayHUD: NSObject {
         performOnMain {
             Config.hudHasCustomPosition = false
             guard let panel: NSPanel = self.panel, panel.isVisible else { return }
-            self.positionPanel(initial: false)
+            self.positionPanel(initial: false, animated: false)
             Log.info("Flow-Bar position reset to default")
         }
     }
@@ -883,21 +1062,61 @@ final class OverlayHUD: NSObject {
         }
     }
 
-    // MARK: - Level meter
+    // MARK: - Waveform
 
-    private func setBar(_ bar: NSView, index: Int, active: Bool) {
-        let barHeight: CGFloat = active ? Self.barHeights[index] : Self.inactiveBarHeight
-        var frame: NSRect = bar.frame
-        frame.origin.y = (Self.pillHeight - barHeight) / 2
-        frame.size.height = barHeight
-        bar.frame = frame
-        bar.alphaValue = active ? 1.0 : 0.3
+    /// Paints all bars from `levelHistory` in one pass. Animated updates run
+    /// through a short `NSAnimationContext` group so consecutive samples blend
+    /// into a smooth waveform instead of snapping bar-to-bar.
+    private func paintBars(animated: Bool) {
+        let midY: CGFloat = Self.pillHeight / 2
+        let applyHeights: () -> Void = {
+            for (index, height) in self.levelHistory.enumerated() where index < self.barViews.count {
+                let bar: NSView = self.barViews[index]
+                var frame: NSRect = bar.frame
+                frame.origin.y = midY - height / 2
+                frame.size.height = height
+                self.setFrame(frame, on: bar, animated: animated)
+            }
+        }
+        if animated {
+            NSAnimationContext.runAnimationGroup { (context: NSAnimationContext) in
+                context.duration = 0.1
+                context.timingFunction = CAMediaTimingFunction(name: .linear)
+                applyHeights()
+            }
+        } else {
+            applyHeights()
+        }
     }
 
     private func resetBars() {
-        for (index, bar) in barViews.enumerated() {
-            setBar(bar, index: index, active: false)
+        levelHistory = Array(repeating: Self.minBarHeight, count: Self.barCount)
+        paintBars(animated: false)
+    }
+
+    // MARK: - Shimmer (transcribing/cleaning "working" pulse)
+
+    private static let shimmerAnimationKey = "flowbar.shimmer"
+
+    private func startShimmer() {
+        guard !reducedMotion else {
+            shimmerView.layer?.removeAnimation(forKey: Self.shimmerAnimationKey)
+            shimmerView.alphaValue = 0.6
+            return
         }
+        guard shimmerView.layer?.animation(forKey: Self.shimmerAnimationKey) == nil else { return }
+        let pulse: CABasicAnimation = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 0.3
+        pulse.toValue = 0.9
+        pulse.duration = 0.9
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        shimmerView.layer?.add(pulse, forKey: Self.shimmerAnimationKey)
+    }
+
+    private func stopShimmer() {
+        shimmerView.layer?.removeAnimation(forKey: Self.shimmerAnimationKey)
     }
 
     deinit {
