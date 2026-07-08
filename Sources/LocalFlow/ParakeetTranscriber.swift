@@ -174,7 +174,7 @@ final class ParakeetTranscriber {
 
     /// Converts 16-bit PCM mono 16kHz WAV data into normalized Float
     /// samples, skipping the 44-byte canonical RIFF header.
-    private static func floatSamples(fromWav wav: Data) -> [Float] {
+    static func floatSamples(fromWav wav: Data) -> [Float] {
         guard wav.count > wavHeaderSize else { return [] }
         let sampleCount = (wav.count - wavHeaderSize) / MemoryLayout<Int16>.size
         guard sampleCount > 0 else { return [] }

@@ -247,6 +247,14 @@ enum Config {
         set { defaults.set(newValue, forKey: "quietModeEnabled") }
     }
 
+    /// Labels each Capture Mode chunk in the Scratchpad with its dominant
+    /// speaker's name via on-device diarization. Off by default so the
+    /// diarization models are never downloaded unless explicitly opted in.
+    static var speakerLabelsEnabled: Bool {
+        get { defaults.object(forKey: "speakerLabelsEnabled") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "speakerLabelsEnabled") }
+    }
+
     /// While `Date()` is before this, the idle Flow-Bar stays hidden (the
     /// "Hide for 1 hour" action); recording feedback still shows. Unset reads
     /// as the epoch, i.e. always in the past → visible.

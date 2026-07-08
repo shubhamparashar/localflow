@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let server = WhisperServerManager()
     private let hud = OverlayHUD()
     private lazy var scratchpad = ScratchpadController()
+    private lazy var speakersPanel = SpeakersPanel()
     private let settings = SettingsController()
     private lazy var onboarding = OnboardingController()
 
@@ -379,7 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .capture:
                     self.captureChunkCount += 1
                     Log.info("Capture mode: chunk \(self.captureChunkCount) (\(text.count) chars)")
-                    self.scratchpad.append(text + "\n\n")
+                    self.appendCaptureChunk(text: text, wav: wav)
                     self.maybeRestartCapture(wasCapture: true, producedText: true)
                 case .normal:
                     self.lastRawTranscript = text
@@ -453,6 +454,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Appends one capture chunk's transcript to the Scratchpad, prefixed
+    /// with "**Speaker N:**" when speaker labeling is on and the diarizer is
+    /// ready. Chunk-level labeling only — the whole chunk gets one label
+    /// (its dominant speaker by spoken duration), not per-word attribution.
+    private func appendCaptureChunk(text: String, wav: Data) {
+        guard Config.speakerLabelsEnabled, SpeakerDiarizer.shared.isReady else {
+            scratchpad.append(text + "\n\n")
+            return
+        }
+        let samples = ParakeetTranscriber.floatSamples(fromWav: wav)
+        SpeakerDiarizer.shared.diarize(samples: samples) { [weak self] segments in
+            guard let self else { return }
+            guard let speakerId = SpeakerDiarizer.dominantSpeaker(segments) else {
+                self.scratchpad.append(text + "\n\n")
+                return
+            }
+            let name = SpeakerDiarizer.shared.name(for: speakerId)
+            self.scratchpad.append("**\(name):** " + text + "\n\n")
+        }
+    }
+
     // MARK: - Capture mode (long-form notes into the Scratchpad)
 
     /// Chains the next capture take while capture mode stays on. Three
@@ -500,9 +522,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             scratchpad.append("— \(time) —\n")
             scratchpad.show()
             Log.info("Capture mode: started")
+            if Config.speakerLabelsEnabled && SpeakerDiarizer.shared.isReady {
+                SpeakerDiarizer.shared.startSession()
+            }
             startCaptureTake()
         } else {
             Log.info("Capture mode: stopped after \(captureChunkCount) chunks")
+            if Config.speakerLabelsEnabled && SpeakerDiarizer.shared.isReady {
+                SpeakerDiarizer.shared.persistSession()
+            }
             if state == .recording, sessionIsCapture || handsFreeArmed {
                 endDictation()
             }
@@ -840,6 +868,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claudePipeToggle.target = self
         claudePipeToggle.state = Config.claudePipeEnabled ? .on : .off
         menu.addItem(claudePipeToggle)
+
+        let speakerLabels = NSMenuItem(
+            title: "Label Speakers (capture)",
+            action: #selector(toggleSpeakerLabels),
+            keyEquivalent: ""
+        )
+        speakerLabels.target = self
+        speakerLabels.state = Config.speakerLabelsEnabled ? .on : .off
+        menu.addItem(speakerLabels)
+
+        if Config.speakerLabelsEnabled {
+            let speakersItem = NSMenuItem(
+                title: "Speakers…",
+                action: #selector(showSpeakersPanel),
+                keyEquivalent: ""
+            )
+            speakersItem.target = self
+            menu.addItem(speakersItem)
+        }
         menu.addItem(.separator())
 
         let cleanup = NSMenuItem(
@@ -1081,6 +1128,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleQuietMode() {
         Config.quietModeEnabled.toggle()
         rebuildMenu()
+    }
+
+    @objc private func toggleSpeakerLabels() {
+        Config.speakerLabelsEnabled.toggle()
+        Log.info("Speaker labels \(Config.speakerLabelsEnabled ? "enabled" : "disabled")")
+        if Config.speakerLabelsEnabled {
+            SpeakerDiarizer.shared.prepare { ready in
+                Log.info("Diarizer engine ready: \(ready)")
+            }
+        }
+        rebuildMenu()
+    }
+
+    @objc private func showSpeakersPanel() {
+        speakersPanel.show()
     }
 
     @objc private func toggleRedactionGuard() {
