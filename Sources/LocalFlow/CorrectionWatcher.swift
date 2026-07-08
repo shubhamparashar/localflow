@@ -52,6 +52,7 @@ final class CorrectionWatcher {
         // Many apps (Electron, canvas-based) don't expose AXValue — skip
         // silently; this feature is opportunistic.
         guard err == .success, let current = value as? String, !current.isEmpty else { return }
+        PolishFeedback.record(injected: snapshot.pastedText, current: current)
         let corrections = Self.findCorrections(pasted: snapshot.pastedText, current: current)
         guard !corrections.isEmpty else { return }
         Log.info("Learned correction candidates: \(corrections.joined(separator: ", "))")

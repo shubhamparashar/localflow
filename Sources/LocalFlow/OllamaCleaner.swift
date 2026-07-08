@@ -125,6 +125,7 @@ enum OllamaCleaner {
         if let tone = profile?.toneInstruction, !tone.isEmpty {
             system += "\nTarget context: \(tone)"
         }
+        system += PolishFeedback.promptBlock()
         if let fieldContext, !fieldContext.isEmpty {
             system += "\n\nContext already in the user's document (for spelling/proper nouns only, do NOT include it in the output):\n\(fieldContext)"
         }

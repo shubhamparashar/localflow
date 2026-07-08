@@ -53,8 +53,18 @@ final class AudioRecorder {
     private var noiseFloorDb: Float = -70
 
     private static let silenceWindow: TimeInterval = 0.9
+    /// Long-form dictation pauses to think: once the speaker has been going
+    /// past `longFormAfter`, a ~1s gap is a pause, not the end — require a
+    /// longer silence before auto-stopping.
+    private static let longFormSilenceWindow: TimeInterval = 2.5
+    private static let longFormAfter: TimeInterval = 12
     private static let noSpeechTimeout: TimeInterval = 10
-    private static let maxHandsFreeDuration: TimeInterval = 90
+    private static let maxHandsFreeDuration: TimeInterval = 180
+
+    /// Pure endpoint-window selection, exposed for testing.
+    static func endpointSilenceWindow(speakingFor: TimeInterval) -> TimeInterval {
+        speakingFor > longFormAfter ? longFormSilenceWindow : silenceWindow
+    }
 
     /// Input gain multiplier and VAD speech-threshold offset (added to the
     /// adaptive noise floor) for normal vs. quiet/whispered speech. Quiet
@@ -271,8 +281,9 @@ final class AudioRecorder {
         }
 
         guard autoStopEnabled, !autoStopFired else { return }
+        let speakingFor = now.timeIntervalSince(recordingStartedAt)
         let shouldStop =
-            (speechDetected && now.timeIntervalSince(lastSpeechAt) > Self.silenceWindow) ||
+            (speechDetected && now.timeIntervalSince(lastSpeechAt) > Self.endpointSilenceWindow(speakingFor: speakingFor)) ||
             (!speechDetected && now.timeIntervalSince(armedAt) > Self.noSpeechTimeout) ||
             (now.timeIntervalSince(recordingStartedAt) > Self.maxHandsFreeDuration)
         if shouldStop {

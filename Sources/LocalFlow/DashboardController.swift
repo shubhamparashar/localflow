@@ -161,7 +161,11 @@ final class DashboardController: NSObject, NSWindowDelegate {
             button.image = NSImage(systemSymbolName: tab.symbolName, accessibilityDescription: tab.title)
             button.imagePosition = .imageLeading
             button.isBordered = false
-            button.setButtonType(.pushOnPushOff)
+            // Selection is drawn manually on the layer; a stateful button type
+            // would re-render the on-state content with the highlighted style,
+            // shifting the selected row's icon/label out of line with the rest.
+            button.setButtonType(.momentaryChange)
+            (button.cell as? NSButtonCell)?.highlightsBy = []
             button.alignment = .left
             button.font = .systemFont(ofSize: 13)
             button.wantsLayer = true
@@ -184,7 +188,6 @@ final class DashboardController: NSObject, NSWindowDelegate {
         selectedTab = tab
         for button in sidebarButtons {
             let isSelected = button.tag == tab.rawValue
-            button.state = isSelected ? .on : .off
             button.layer?.backgroundColor = isSelected
                 ? NSColor(white: 0.87, alpha: 1).cgColor
                 : NSColor.clear.cgColor

@@ -445,7 +445,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         VoiceProfileStore.record(record)
                     }
                 }
-            case .failure:
+            case .failure(let error):
+                Log.error("Transcription failed, take dropped: \(error.localizedDescription)")
+                self.hud.show(.warning("Transcription failed — take lost"))
                 self.maybeRestartCapture(wasCapture: isCapture, producedText: false)
             }
         }
