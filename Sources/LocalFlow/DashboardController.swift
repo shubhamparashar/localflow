@@ -33,6 +33,16 @@ final class DashboardController: NSObject, NSWindowDelegate {
             case .scratchpad: return "Scratchpad"
             }
         }
+
+        var symbolName: String {
+            switch self {
+            case .home: return "house"
+            case .settings: return "gearshape"
+            case .history: return "clock"
+            case .voiceProfile: return "waveform"
+            case .scratchpad: return "note.text"
+            }
+        }
     }
 
     private var window: NSWindow?
@@ -44,16 +54,20 @@ final class DashboardController: NSObject, NSWindowDelegate {
     private var whisperLabel: NSTextField?
     private var ollamaLabel: NSTextField?
     private var micLabel: NSTextField?
+    private var parakeetDot: NSView?
+    private var whisperDot: NSView?
+    private var ollamaDot: NSView?
+    private var micDot: NSView?
     private var cleanupLevelPopup: NSPopUpButton?
     private var languagePopup: NSPopUpButton?
     private var quietModeCheck: NSButton?
     private var launchCheck: NSButton?
     private var todayWordsLabel: NSTextField?
     private var weekWordsLabel: NSTextField?
-    private var avgLatencyLabel: NSTextField?
     private var timeSavedLabel: NSTextField?
+    private var timeSavedSubLabel: NSTextField?
     private var p50LatencyLabel: NSTextField?
-    private var p95LatencyLabel: NSTextField?
+    private var latencySubLabel: NSTextField?
 
     private let webView = WKWebView()
 
@@ -71,11 +85,13 @@ final class DashboardController: NSObject, NSWindowDelegate {
     private func build() {
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         win.title = "LocalFlow"
+        win.titlebarAppearsTransparent = true
+        win.titleVisibility = .hidden
         win.isReleasedWhenClosed = false
         win.delegate = self
         win.minSize = NSSize(width: 620, height: 420)
@@ -111,13 +127,21 @@ final class DashboardController: NSObject, NSWindowDelegate {
         stack.alignment = .leading
         stack.spacing = 2
         stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 12, bottom: 16, right: 12)
+        // Extra top inset clears the transparent titlebar's traffic-light buttons.
+        stack.edgeInsets = NSEdgeInsets(top: 36, left: 10, bottom: 16, right: 10)
 
         for tab in Tab.allCases {
-            let button = NSButton(title: tab.title, target: self, action: #selector(sidebarTapped(_:)))
+            let button = NSButton(title: " \(tab.title)", target: self, action: #selector(sidebarTapped(_:)))
             button.tag = tab.rawValue
-            button.bezelStyle = .rounded
+            button.image = NSImage(systemSymbolName: tab.symbolName, accessibilityDescription: tab.title)
+            button.imagePosition = .imageLeading
+            button.bezelStyle = .recessed
             button.setButtonType(.pushOnPushOff)
+            button.isBordered = true
+            button.alignment = .left
+            button.font = .systemFont(ofSize: 13)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(equalToConstant: 140).isActive = true
             stack.addArrangedSubview(button)
             sidebarButtons.append(button)
         }
@@ -180,26 +204,15 @@ final class DashboardController: NSObject, NSWindowDelegate {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 12
+        stack.spacing = 20
         stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        stack.edgeInsets = NSEdgeInsets(top: 36, left: 28, bottom: 28, right: 28)
 
-        stack.addArrangedSubview(header("Status"))
-        let parakeet = statusRow("Parakeet")
-        let whisper = statusRow("Whisper server")
-        let ollama = statusRow("Ollama")
-        let mic = statusRow("Microphone permission")
-        parakeetLabel = parakeet.1
-        whisperLabel = whisper.1
-        ollamaLabel = ollama.1
-        micLabel = mic.1
-        [parakeet.0, whisper.0, ollama.0, mic.0].forEach { stack.addArrangedSubview($0) }
-
-        stack.addArrangedSubview(header("Quick Settings"))
-        stack.addArrangedSubview(buildQuickToggles())
-
-        stack.addArrangedSubview(header("This Week"))
         stack.addArrangedSubview(buildStatsStrip())
+        stack.addArrangedSubview(header("Status"))
+        stack.addArrangedSubview(buildStatusCard())
+        stack.addArrangedSubview(header("Quick Settings"))
+        stack.addArrangedSubview(card(buildQuickToggles()))
 
         refreshStatus()
         refreshStats()
@@ -213,29 +226,91 @@ final class DashboardController: NSObject, NSWindowDelegate {
         return label
     }
 
-    private func statusRow(_ title: String) -> (NSView, NSTextField) {
-        let name = NSTextField(labelWithString: "\(title):")
+    /// Rounded, bordered card container — the shared "premium" surface for
+    /// grouping related content on the Home tab.
+    private func card(_ content: NSView, padding: CGFloat = 16) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor
+        container.layer?.cornerRadius = 12
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = NSColor.separatorColor.cgColor
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: padding),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: padding),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -padding),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -padding),
+        ])
+        return container
+    }
+
+    private func statusDot() -> NSView {
+        let dot = NSView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 4
+        dot.layer?.backgroundColor = NSColor.systemGray.cgColor
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.widthAnchor.constraint(equalToConstant: 8).isActive = true
+        dot.heightAnchor.constraint(equalToConstant: 8).isActive = true
+        return dot
+    }
+
+    private func statusRow(_ title: String) -> (NSView, NSTextField, NSView) {
+        let dot = statusDot()
+        let name = NSTextField(labelWithString: title)
+        name.font = .systemFont(ofSize: 13)
         let value = NSTextField(labelWithString: "checking…")
+        value.font = .systemFont(ofSize: 12)
         value.textColor = .secondaryLabelColor
-        let row = NSStackView(views: [name, value])
+        let row = NSStackView(views: [dot, name, value])
         row.orientation = .horizontal
-        row.spacing = 6
-        return (row, value)
+        row.spacing = 8
+        row.alignment = .centerY
+        return (row, value, dot)
+    }
+
+    private func buildStatusCard() -> NSView {
+        let parakeet = statusRow("Parakeet")
+        let whisper = statusRow("Whisper server")
+        let ollama = statusRow("Ollama")
+        let mic = statusRow("Microphone")
+        parakeetLabel = parakeet.1
+        whisperLabel = whisper.1
+        ollamaLabel = ollama.1
+        micLabel = mic.1
+        parakeetDot = parakeet.2
+        whisperDot = whisper.2
+        ollamaDot = ollama.2
+        micDot = mic.2
+
+        let grid = NSGridView(views: [[parakeet.0, ollama.0], [whisper.0, mic.0]])
+        grid.rowSpacing = 10
+        grid.columnSpacing = 24
+        return card(grid)
+    }
+
+    private func setStatus(dot: NSView?, label: NSTextField?, ok: Bool, okText: String, badText: String) {
+        label?.stringValue = ok ? okText : badText
+        dot?.layer?.backgroundColor = (ok ? NSColor.systemGreen : NSColor.systemRed).cgColor
     }
 
     private func refreshStatus() {
-        parakeetLabel?.stringValue = ParakeetTranscriber.shared.isReady ? "Ready" : "Not ready"
+        setStatus(dot: parakeetDot, label: parakeetLabel, ok: ParakeetTranscriber.shared.isReady, okText: "Ready", badText: "Not ready")
 
         WhisperServerManager().checkHealth { [weak self] alive in
-            self?.whisperLabel?.stringValue = alive ? "Running" : "Not running"
+            guard let self else { return }
+            self.setStatus(dot: self.whisperDot, label: self.whisperLabel, ok: alive, okText: "Running", badText: "Not running")
         }
 
         checkOllamaReachable { [weak self] reachable in
-            self?.ollamaLabel?.stringValue = reachable ? "Reachable" : "Unreachable"
+            guard let self else { return }
+            self.setStatus(dot: self.ollamaDot, label: self.ollamaLabel, ok: reachable, okText: "Reachable", badText: "Unreachable")
         }
 
-        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-        micLabel?.stringValue = micStatus == .authorized ? "Granted" : "Not granted"
+        let micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        setStatus(dot: micDot, label: micLabel, ok: micGranted, okText: "Granted", badText: "Not granted")
     }
 
     /// Short-timeout reachability probe against Ollama's tags endpoint —
@@ -331,30 +406,44 @@ final class DashboardController: NSObject, NSWindowDelegate {
     }
 
     private func buildStatsStrip() -> NSView {
-        let today = statCard("today", &todayWordsLabel)
-        let week = statCard("this week", &weekWordsLabel)
-        let latency = statCard("avg latency", &avgLatencyLabel)
-        let saved = statCard("time saved", &timeSavedLabel)
-        let p50 = statCard("p50 latency", &p50LatencyLabel)
-        let p95 = statCard("p95 latency", &p95LatencyLabel)
-        let row = NSStackView(views: [today, week, latency, saved, p50, p95])
+        let today = heroStatCard("today", &todayWordsLabel)
+        let week = heroStatCard("this week", &weekWordsLabel)
+        let saved = heroStatCard("time saved", &timeSavedLabel, sub: &timeSavedSubLabel)
+        let p50 = heroStatCard("p50 latency", &p50LatencyLabel, sub: &latencySubLabel)
+        let row = NSStackView(views: [today, week, saved, p50])
         row.orientation = .horizontal
-        row.spacing = 16
+        row.distribution = .fillEqually
+        row.spacing = 14
         return row
     }
 
-    private func statCard(_ label: String, _ target: inout NSTextField?) -> NSView {
+    /// Big bold number + small caption, optionally with a secondary detail
+    /// line underneath (e.g. "≈3.2x faster than typing").
+    private func heroStatCard(
+        _ label: String,
+        _ target: inout NSTextField?,
+        sub subTarget: inout NSTextField?
+    ) -> NSView {
         let value = NSTextField(labelWithString: "—")
-        value.font = NSFont.boldSystemFont(ofSize: 18)
+        value.font = NSFont.monospacedDigitSystemFont(ofSize: 28, weight: .bold)
         target = value
         let caption = NSTextField(labelWithString: label)
-        caption.font = NSFont.systemFont(ofSize: 11)
+        caption.font = .systemFont(ofSize: 12)
         caption.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [value, caption])
+        let sub = NSTextField(labelWithString: "")
+        sub.font = .systemFont(ofSize: 11)
+        sub.textColor = .tertiaryLabelColor
+        subTarget = sub
+        let stack = NSStackView(views: [value, caption, sub])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 2
-        return stack
+        return card(stack, padding: 16)
+    }
+
+    private func heroStatCard(_ label: String, _ target: inout NSTextField?) -> NSView {
+        var noSub: NSTextField?
+        return heroStatCard(label, &target, sub: &noSub)
     }
 
     private func refreshStats() {
@@ -362,10 +451,12 @@ final class DashboardController: NSObject, NSWindowDelegate {
         let stats = computeDashboardStats(records: records, now: Date())
         todayWordsLabel?.stringValue = "\(stats.todayWords)"
         weekWordsLabel?.stringValue = "\(stats.weekWords)"
-        avgLatencyLabel?.stringValue = String(format: "%.1fs", stats.avgLatencySec)
         timeSavedLabel?.stringValue = String(format: "%.0fm", stats.timeSavedMinutes)
         p50LatencyLabel?.stringValue = String(format: "%.1fs", stats.p50TakeLatencySec)
-        p95LatencyLabel?.stringValue = String(format: "%.1fs", stats.p95TakeLatencySec)
+        latencySubLabel?.stringValue = String(format: "avg %.1fs · p95 %.1fs", stats.avgLatencySec, stats.p95TakeLatencySec)
+
+        let speedup = speedupMultiplier(words: stats.weekWords, speakingMinutes: stats.speakingMinutes)
+        timeSavedSubLabel?.stringValue = speedup > 0 ? String(format: "≈%.1fx faster than typing", speedup) : ""
     }
 
     // MARK: - Scratchpad tab (fallback: opens the shared window)

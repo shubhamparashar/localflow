@@ -249,30 +249,38 @@ enum VoiceProfileStore {
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>LocalFlow &mdash; Voice Profile</title>
         <style>
+        :root {
+            --bg: #f5f5f7; --fg: #1d1d1f; --sub: #6e6e73; --card: #ffffff; --border: #e5e5e7;
+            --accent: #3a6cd8; --rank: #a1a1a6;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root { --bg: #111318; --fg: #e6e8ee; --sub: #9aa0aa; --card: #1c1f26; --border: #2a2e38;
+                --accent: #7aa2f7; --rank: #5a5f6b; }
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { background: #111318; color: #e6e8ee; font-family: system-ui, -apple-system, sans-serif; padding: 40px 20px; }
+        body { background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; padding: 40px 20px; }
         .wrap { max-width: 860px; margin: 0 auto; }
         h1 { font-size: 28px; font-weight: 700; }
-        h2 { font-size: 15px; font-weight: 600; color: #9aa0aa; text-transform: uppercase; letter-spacing: 0.08em; margin: 36px 0 14px; }
-        .sub { color: #9aa0aa; font-size: 13px; margin-top: 6px; }
+        h2 { font-size: 15px; font-weight: 600; color: var(--sub); text-transform: uppercase; letter-spacing: 0.08em; margin: 36px 0 14px; }
+        .sub { color: var(--sub); font-size: 13px; margin-top: 6px; }
         .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 24px; }
-        .card { background: #1c1f26; border: 1px solid #2a2e38; border-radius: 12px; padding: 16px; }
-        .card .value { font-size: 24px; font-weight: 700; color: #7aa2f7; }
-        .card .label { font-size: 12px; color: #9aa0aa; margin-top: 4px; }
-        .chart { display: flex; align-items: flex-end; gap: 10px; background: #1c1f26; border: 1px solid #2a2e38; border-radius: 12px; padding: 20px; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+        .card .value { font-size: 24px; font-weight: 700; color: var(--accent); }
+        .card .label { font-size: 12px; color: var(--sub); margin-top: 4px; }
+        .chart { display: flex; align-items: flex-end; gap: 10px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
         .bar-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 200px; }
-        .bar { width: 100%; max-width: 56px; background: linear-gradient(180deg, #7aa2f7, #3d5aa9); border-radius: 6px 6px 2px 2px; }
-        .bar-val { font-size: 12px; color: #9aa0aa; margin-bottom: 6px; }
-        .bar-label { font-size: 12px; color: #9aa0aa; margin-top: 8px; }
+        .bar { width: 100%; max-width: 56px; background: linear-gradient(180deg, var(--accent), #3d5aa9); border-radius: 6px 6px 2px 2px; }
+        .bar-val { font-size: 12px; color: var(--sub); margin-bottom: 6px; }
+        .bar-label { font-size: 12px; color: var(--sub); margin-top: 8px; }
         .topwords { list-style: none; counter-reset: rank; }
-        .topwords li { display: flex; align-items: center; gap: 12px; background: #1c1f26; border: 1px solid #2a2e38; border-radius: 8px; padding: 8px 14px; margin-bottom: 6px; counter-increment: rank; }
-        .topwords li::before { content: counter(rank); color: #5a5f6b; font-size: 12px; width: 18px; }
+        .topwords li { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; margin-bottom: 6px; counter-increment: rank; }
+        .topwords li::before { content: counter(rank); color: var(--rank); font-size: 12px; width: 18px; }
         .topwords .w { flex: 1; font-weight: 600; }
-        .topwords .c { color: #7aa2f7; font-variant-numeric: tabular-nums; }
+        .topwords .c { color: var(--accent); font-variant-numeric: tabular-nums; }
         .modes { display: flex; gap: 12px; flex-wrap: wrap; }
-        .mode { background: #1c1f26; border: 1px solid #2a2e38; border-radius: 8px; padding: 10px 16px; font-size: 14px; }
-        .mode b { color: #7aa2f7; margin-left: 8px; }
-        .empty { color: #5a5f6b; font-size: 14px; }
+        .mode { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; font-size: 14px; }
+        .mode b { color: var(--accent); margin-left: 8px; }
+        .empty { color: var(--rank); font-size: 14px; }
         </style>
         </head>
         <body>

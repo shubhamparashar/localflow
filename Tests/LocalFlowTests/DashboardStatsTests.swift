@@ -142,6 +142,22 @@ struct DictationRecordDecodeTests {
 }
 
 @Suite
+struct SpeedupMultiplierTests {
+    @Test func zeroWordsReturnsZero() {
+        #expect(speedupMultiplier(words: 0, speakingMinutes: 5) == 0)
+    }
+
+    @Test func zeroSpeakingMinutesReturnsZero() {
+        #expect(speedupMultiplier(words: 100, speakingMinutes: 0) == 0)
+    }
+
+    @Test func computesRatioOfTypingToSpeakingTime() {
+        // 400 words at 40wpm typing = 10 minutes; spoken in 2 minutes -> 5x.
+        #expect(abs(speedupMultiplier(words: 400, speakingMinutes: 2) - 5.0) < 0.0001)
+    }
+}
+
+@Suite
 struct PercentileTests {
     @Test func emptyArrayReturnsZero() {
         #expect(percentile([], 0.5) == 0)

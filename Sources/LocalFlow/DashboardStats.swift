@@ -7,6 +7,16 @@ struct DashboardStats {
     let timeSavedMinutes: Double
     let p50TakeLatencySec: Double
     let p95TakeLatencySec: Double
+    let speakingMinutes: Double
+}
+
+/// "N× faster than typing" — ratio of typing time (at 40wpm) to actual
+/// speaking time for the same word count. Returns 0 when there's nothing to
+/// compare (no words, or no time spent speaking).
+func speedupMultiplier(words: Int, speakingMinutes: Double) -> Double {
+    guard words > 0, speakingMinutes > 0 else { return 0 }
+    let typingMinutes = Double(words) / 40.0
+    return typingMinutes / speakingMinutes
 }
 
 /// Linear-interpolation percentile (matches the common "R-7" definition):
@@ -36,7 +46,7 @@ func computeDashboardStats(records: [DictationRecord], now: Date) -> DashboardSt
     guard let weekStart = calendar.date(byAdding: .day, value: -6, to: today) else {
         return DashboardStats(
             todayWords: 0, weekWords: 0, avgLatencySec: 0, timeSavedMinutes: 0,
-            p50TakeLatencySec: 0, p95TakeLatencySec: 0
+            p50TakeLatencySec: 0, p95TakeLatencySec: 0, speakingMinutes: 0
         )
     }
 
@@ -63,6 +73,7 @@ func computeDashboardStats(records: [DictationRecord], now: Date) -> DashboardSt
         avgLatencySec: avgLatencySec,
         timeSavedMinutes: timeSavedMinutes,
         p50TakeLatencySec: p50TakeLatencySec,
-        p95TakeLatencySec: p95TakeLatencySec
+        p95TakeLatencySec: p95TakeLatencySec,
+        speakingMinutes: speakingMinutes
     )
 }
