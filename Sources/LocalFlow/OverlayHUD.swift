@@ -408,8 +408,11 @@ final class OverlayHUD: NSObject {
 
         badgeLabel = NSTextField(labelWithString: "")
         badgeLabel.font = NSFont.systemFont(ofSize: 10, weight: .bold)
-        badgeLabel.textColor = NSColor.white.withAlphaComponent(0.75)
+        badgeLabel.textColor = NSColor.white.withAlphaComponent(0.9)
         badgeLabel.alignment = .center
+        badgeLabel.wantsLayer = true
+        badgeLabel.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        badgeLabel.layer?.cornerRadius = 9
         effect.addSubview(badgeLabel)
 
         barViews = (0..<Self.barCount).map { (index: Int) -> NSView in
@@ -578,15 +581,33 @@ final class OverlayHUD: NSObject {
 
     // MARK: - Hover
 
-    /// Advances the active language to the next entry in `languageRecents`
-    /// (wrapping around) and reports it the same way the pill's Language
-    /// submenu would.
+    /// Pops the language menu at the badge — visible feedback beats the old
+    /// silent cycle-through-recents, which read as "nothing happened".
     private func cycleLanguageBadge() {
-        let next: String = Config.nextLanguage(after: Config.whisperLanguage, in: Config.languageRecents)
-        onSelectLanguage?(next)
+        let menu: NSMenu = buildLanguageMenu()
+        let origin: NSPoint = NSPoint(x: badgeLabel.frame.minX, y: badgeLabel.frame.minY - 4)
+        menu.popUp(positioning: nil, at: origin, in: contentView)
     }
 
+    private var hoverCollapseWork: DispatchWorkItem?
+
+    /// Hover-in applies immediately; hover-out is debounced. The animated
+    /// resize moves the tracking rect under the cursor, which can fire
+    /// spurious exit/enter pairs mid-animation — without the delay those
+    /// re-trigger the resize and the pill visibly jitters.
     private func hoverChanged(_ hovering: Bool) {
+        hoverCollapseWork?.cancel()
+        hoverCollapseWork = nil
+        if hovering {
+            applyHover(true)
+        } else {
+            let work = DispatchWorkItem { [weak self] in self?.applyHover(false) }
+            hoverCollapseWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        }
+    }
+
+    private func applyHover(_ hovering: Bool) {
         guard isHovering != hovering else { return }
         isHovering = hovering
         // Only the idle pill changes shape on hover (collapsed icon ↔ hint).
@@ -781,7 +802,7 @@ final class OverlayHUD: NSObject {
             width += Self.elementGap + Self.meterWidth
         }
         if showBadge {
-            width += Self.elementGap + badgeLabel.frame.width
+            width += Self.elementGap + badgeLabel.frame.width + 12
         }
         width += Self.horizontalPadding
         width = max(width, idleCollapsed ? Self.minIdleWidth : Self.minPillWidth)
@@ -880,8 +901,9 @@ final class OverlayHUD: NSObject {
             contentView.badgeHitFrame = nil
             return
         }
-        let height: CGFloat = badgeLabel.frame.height
-        let frame: NSRect = NSRect(x: x, y: midY - height / 2, width: badgeLabel.frame.width, height: height)
+        let height: CGFloat = 18
+        let width: CGFloat = badgeLabel.frame.width + 12
+        let frame: NSRect = NSRect(x: x - 12, y: midY - height / 2, width: width, height: height)
         setFrame(frame, on: badgeLabel, animated: animated)
         contentView.badgeHitFrame = frame.insetBy(dx: -6, dy: -6)
     }
