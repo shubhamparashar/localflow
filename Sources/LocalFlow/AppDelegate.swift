@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import ApplicationServices
 import ServiceManagement
 
@@ -123,6 +124,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { _ in
             ParakeetTranscriber.shared.preWarm()
+        }
+        // Input device changed mid-recording (headset connect/disconnect,
+        // Bluetooth profile flip when a meeting app grabs the mic) — the
+        // engine's tap is now invalid. End the take cleanly with whatever
+        // audio was captured; capture/meeting loops restart on their own.
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.state == .recording else { return }
+            Log.info("Audio device changed mid-recording — ending take to recover")
+            self.endDictation()
+        }
+        // Last-resort observability: uncaught ObjC exceptions killed the app
+        // silently before — at minimum, get the reason into our own log.
+        NSSetUncaughtExceptionHandler { exception in
+            Log.error("FATAL uncaught exception: \(exception.name.rawValue): \(exception.reason ?? "?")")
         }
         startWhisperKeepAliveTimer()
 

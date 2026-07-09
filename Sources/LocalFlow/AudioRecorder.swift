@@ -1,4 +1,5 @@
 import AVFoundation
+import ExceptionCatcher
 
 /// Decides whether a rolling ~1s audio tick should trigger a new
 /// partial-caption inference: enough new audio has accumulated since the
@@ -131,28 +132,41 @@ final class AudioRecorder {
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0 else {
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
             throw NSError(domain: "LocalFlow", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "No audio input device available",
             ])
         }
         converter = AVAudioConverter(from: inputFormat, to: targetFormat)
 
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            self?.append(buffer)
+        // AVAudioEngine raises Objective-C exceptions (not Swift errors) when
+        // the input device changed under it — e.g. a Bluetooth headset
+        // flipping profiles as a meeting app grabs its mic. Catch them and
+        // surface as a throw instead of crashing the process.
+        if let exception = LFCatchException({
+            input.removeTap(onBus: 0)
+            input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+                self?.append(buffer)
+            }
+            self.engine.prepare()
+        }) {
+            throw exception
         }
-        engine.prepare()
         try engine.start()
         isRecording = true
+        Log.info("Recording started (input \(Int(inputFormat.sampleRate)) Hz, \(inputFormat.channelCount) ch)")
     }
 
     /// Stops capture and returns the utterance as 16-bit PCM WAV data.
     /// Returns nil when the recording is too short to transcribe (<0.3 s).
     func stop() -> Data? {
         guard isRecording else { return nil }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        if let exception = LFCatchException({
+            self.engine.inputNode.removeTap(onBus: 0)
+            self.engine.stop()
+        }) {
+            Log.error("Audio engine teardown raised: \(exception.localizedDescription)")
+        }
         isRecording = false
 
         var captured: [Float] = []
