@@ -85,6 +85,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         setupStatusItem()
         ensurePermissions()
+        if Config.speakerLabelsEnabled {
+            SpeakerDiarizer.shared.prepare { ready in
+                Log.info("Diarizer engine ready: \(ready)")
+            }
+        }
         maybeShowOnboarding()
         maybeShowDashboardOnLaunch()
         OllamaCleaner.warmUp()
@@ -504,7 +509,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard DictationRoute.shouldRestartCapture(captureActive: captureModeActive, wasCapture: wasCapture) else { return }
         if producedText {
             captureEmptyStreak = 0
-        } else {
+        } else if !meetingModeActive {
+            // Solo capture: 3 fruitless takes means the user walked away.
+            // In a meeting, long stretches of listening are normal — the
+            // mic loop must idle through them, never self-stop.
             captureEmptyStreak += 1
             if captureEmptyStreak >= 3 {
                 Log.info("Capture mode: 3 empty takes in a row, stopping")
@@ -568,6 +576,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// meeting-specific Scratchpad framing.
     private func startMeetingMode() {
         guard !meetingModeActive, !captureModeActive else { return }
+        if Config.speakerLabelsEnabled, !SpeakerDiarizer.shared.isReady {
+            SpeakerDiarizer.shared.prepare { ready in
+                Log.info("Diarizer engine ready: \(ready)")
+            }
+        }
         meetingModeActive = true
         captureModeActive = true
         captureChunkCount = 0
@@ -809,6 +822,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// their own HUD state.
     private func refreshIdleHUD() {
         guard state == .idle else { return }
+        if meetingModeActive {
+            hud.show(.meeting)
+            return
+        }
         let snoozed = Date() < Config.hudHiddenUntil
         if Config.showIdleHUD && !snoozed {
             hud.show(.idle)
@@ -818,6 +835,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func toggleDictationFromHUD() {
+        if meetingModeActive {
+            // The pill is the one obvious control while a meeting records.
+            stopMeetingMode()
+            return
+        }
         if state == .recording {
             endDictation()
         } else {

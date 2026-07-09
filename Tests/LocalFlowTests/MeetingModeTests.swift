@@ -139,3 +139,39 @@ struct MeetingModeTests {
         #expect(label == "Alice")
     }
 }
+
+@Suite struct MeetingQualityFixTests {
+    @Test func clauseLoopCollapses() {
+        let text = "If you want to get a process, then you have to get a process, and you have to get a process, and you have to get a process, and you have to get a process."
+        let out = Transcriber.collapseRepeatedClauses(text)
+        #expect(out == "If you want to get a process, then you have to get a process.")
+    }
+
+    @Test func clauseCollapseLeavesNormalProseAlone() {
+        let text = "We shipped the harness, fixed the pipeline, and updated the docs."
+        #expect(Transcriber.collapseRepeatedClauses(text) == text)
+    }
+
+    @Test func hallucinationDetectedOnTinyVocabularyWall() {
+        let text = String(repeating: "you have to get a process, and then you have to get a process. ", count: 12)
+        #expect(Transcriber.looksLikeHallucination(text))
+    }
+
+    @Test func realSpeechNotFlaggedAsHallucination() {
+        let text = "So the first step of the job is getting to the reactive state on cost. "
+            + "We can connect daily, share multiple channels, watch for spikes higher or lower than expected, "
+            + "and take action quickly. That brings accountability, and doing justice to it drives our own growth "
+            + "over the next two weeks while sea shipping keeps running in parallel with everything else."
+        #expect(!Transcriber.looksLikeHallucination(text))
+    }
+
+    @Test func shortTextNeverFlagged() {
+        #expect(!Transcriber.looksLikeHallucination("Thank you. Thank you."))
+    }
+
+    @Test func leadingLabelsStripped() {
+        #expect(MeetingFormatting.strippingLeadingLabels("**Them:** So, we're still working.") == "So, we're still working.")
+        #expect(MeetingFormatting.strippingLeadingLabels("**Me:** **Them:** Huh.") == "Huh.")
+        #expect(MeetingFormatting.strippingLeadingLabels("No labels here.") == "No labels here.")
+    }
+}

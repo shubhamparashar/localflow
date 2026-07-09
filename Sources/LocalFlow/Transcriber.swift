@@ -119,6 +119,55 @@ enum Transcriber {
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Collapses comma/conjunction-joined clause loops INSIDE a sentence —
+    /// "you have to get a process, and you have to get a process, and …" —
+    /// which the sentence-level pass can't see. 3+ identical consecutive
+    /// clauses (ignoring case and a leading and/or/but) shrink to one.
+    static func collapseRepeatedClauses(_ text: String) -> String {
+        let clauses = text.components(separatedBy: ", ")
+        guard clauses.count >= 3 else { return text }
+        func key(_ clause: String) -> String {
+            var k = clause.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            for prefix in ["and ", "or ", "but ", "so ", "then "] where k.hasPrefix(prefix) {
+                k = String(k.dropFirst(prefix.count))
+            }
+            return k.trimmingCharacters(in: CharacterSet(charactersIn: ".!? "))
+        }
+        var out: [String] = []
+        var runKey = ""
+        var runCount = 0
+        for clause in clauses {
+            let k = key(clause)
+            if k == runKey, !k.isEmpty {
+                runCount += 1
+                if runCount >= 2 { continue }
+            } else {
+                runKey = k
+                runCount = 1
+            }
+            out.append(clause)
+        }
+        guard out.count != clauses.count else { return text }
+        var joined = out.joined(separator: ", ")
+        if let last = text.trimmingCharacters(in: .whitespacesAndNewlines).last,
+           ".!?".contains(last), !".!?".contains(joined.last ?? " ") {
+            joined = joined.trimmingCharacters(in: CharacterSet(charactersIn: ", ")) + String(last)
+        }
+        return joined
+    }
+
+    /// Whisper hallucinates fluent-looking filler on music/noise/silence —
+    /// endless near-identical clauses ("you have to get a process, …" ×20).
+    /// A long text whose vocabulary is tiny relative to its length is such an
+    /// artifact, not speech. Threshold is deliberately conservative: real
+    /// speech rarely drops below ~35% unique words even when repetitive.
+    static func looksLikeHallucination(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter && !$0.isNumber }
+        guard words.count >= 50 else { return false }
+        let unique = Set(words).count
+        return Double(unique) / Double(words.count) < 0.18
+    }
+
     static func clean(_ raw: String) -> String {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         text = text.replacingOccurrences(

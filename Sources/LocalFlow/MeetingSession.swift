@@ -14,6 +14,18 @@ enum MeetingFormatting {
     /// Which label a chunk gets: the mic is always the user; a system-audio
     /// chunk gets the diarized dominant speaker's name when labeling is on
     /// and the diarizer is ready, otherwise the generic "Them".
+    /// Transcripts occasionally arrive already carrying a bold label (echo
+    /// of our own formatting picked up from screen-shared notes, or model
+    /// artifacts) — strip any leading "**X:**" tokens so lines never render
+    /// with doubled labels.
+    static func strippingLeadingLabels(_ text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespaces)
+        while let range = result.range(of: #"^\*\*[^*]{1,20}:\*\*\s*"#, options: .regularExpression) {
+            result.removeSubrange(range)
+        }
+        return result
+    }
+
     static func speakerLabel(
         isMic: Bool,
         speakerLabelsEnabled: Bool,
@@ -36,6 +48,9 @@ final class MeetingSession {
     private let systemAudio = SystemAudioRecorder()
     private var startedAt: Date = .distantPast
     private(set) var isActive = false
+    /// Set false at finish() so transcriptions still in flight when the
+    /// meeting ends are dropped instead of appearing after the closing line.
+    private var acceptingAppends = false
 
     init(scratchpad: ScratchpadController) {
         self.scratchpad = scratchpad
@@ -48,6 +63,7 @@ final class MeetingSession {
     func start() {
         guard !isActive else { return }
         isActive = true
+        acceptingAppends = true
         startedAt = Date()
         let time = startedAt.formatted(date: .omitted, time: .shortened)
         scratchpad.append("— Meeting \(time) —\n")
@@ -81,6 +97,7 @@ final class MeetingSession {
     }
 
     private func finish() {
+        acceptingAppends = false
         Config.meetingModeActive = false
         if Config.speakerLabelsEnabled, SpeakerDiarizer.shared.isReady {
             SpeakerDiarizer.shared.persistSession()
@@ -92,8 +109,9 @@ final class MeetingSession {
     /// One mic chunk finished transcribing — append it labeled "Me", using
     /// the wall clock captured at chunk start (passed in by the caller).
     func appendMicChunk(text: String, chunkStartedAt: Date) {
-        guard !text.isEmpty else { return }
-        let line = MeetingFormatting.prefixedLine(at: chunkStartedAt, speaker: "Me", text: text)
+        guard !text.isEmpty, acceptingAppends else { return }
+        let cleaned = MeetingFormatting.strippingLeadingLabels(text)
+        let line = MeetingFormatting.prefixedLine(at: chunkStartedAt, speaker: "Me", text: cleaned)
         scratchpad.append(line + "\n\n")
     }
 
@@ -106,6 +124,10 @@ final class MeetingSession {
                 if case .failure(let error) = result {
                     Log.error("Meeting mode: system-audio transcription failed (\(error.localizedDescription))")
                 }
+                return
+            }
+            if Transcriber.looksLikeHallucination(text) {
+                Log.info("Meeting mode: dropped hallucinated system chunk (\(text.count) chars)")
                 return
             }
             self.labelAndAppend(text: text, samples: samples, chunkStartedAt: chunkStartedAt)
@@ -132,7 +154,12 @@ final class MeetingSession {
     }
 
     private func append(text: String, speaker: String, chunkStartedAt: Date) {
-        let line = MeetingFormatting.prefixedLine(at: chunkStartedAt, speaker: speaker, text: text)
+        guard acceptingAppends else {
+            Log.info("Meeting mode: dropped late chunk (\(text.count) chars, meeting already ended)")
+            return
+        }
+        let cleaned = MeetingFormatting.strippingLeadingLabels(text)
+        let line = MeetingFormatting.prefixedLine(at: chunkStartedAt, speaker: speaker, text: cleaned)
         scratchpad.append(line + "\n\n")
     }
 }

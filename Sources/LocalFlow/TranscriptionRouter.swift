@@ -50,7 +50,9 @@ enum TranscriptionRouter {
         // single choke point so repetition artifacts never reach injection,
         // cleanup, or capture notes.
         let deliver: (Result<String, Error>) -> Void = { result in
-            completion(result.map(Transcriber.collapseRepeatedSentences))
+            completion(result.map { text in
+                Transcriber.collapseRepeatedClauses(Transcriber.collapseRepeatedSentences(text))
+            })
         }
         let language = languageOverride ?? Config.whisperLanguage
         guard route(language: language, parakeetReady: ParakeetTranscriber.shared.isReady).engine == .parakeet else {

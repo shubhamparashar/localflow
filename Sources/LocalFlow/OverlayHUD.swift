@@ -7,6 +7,10 @@ enum HUDState {
     case transcribing
     case cleaning
     case warning(String)
+    /// Meeting Mode is on and the mic is between takes — the pill must keep
+    /// signalling "recording your meeting" so system-audio capture is never
+    /// invisible.
+    case meeting
 }
 
 /// Borderless panel that never takes key/main status, so the HUD can float
@@ -634,10 +638,10 @@ final class OverlayHUD: NSObject {
     private func applyHover(_ hovering: Bool) {
         guard isHovering != hovering else { return }
         isHovering = hovering
-        // Only the idle pill changes shape on hover (collapsed icon ↔ hint).
-        // Instant relayout: an animated panel resize leaves the (already
-        // target-positioned) content misaligned for the animation's duration.
-        guard isIdle(currentState) else { return }
+        // Only the idle/meeting pill changes shape on hover (collapsed icon
+        // ↔ hint). Instant relayout: an animated panel resize leaves the
+        // (already target-positioned) content misaligned mid-animation.
+        guard isIdle(currentState) || isMeeting(currentState) else { return }
         applyVisuals()
         relayout(animated: false)
     }
@@ -720,6 +724,11 @@ final class OverlayHUD: NSObject {
             symbolName = "exclamationmark.triangle.fill"
             iconColor = .systemOrange
             text = message
+        case .meeting:
+            symbolName = "record.circle"
+            iconColor = .systemRed
+            text = "Meeting notes on — click to stop"
+            showText = isHovering
         }
         let config: NSImage.SymbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
         let image: NSImage? = NSImage(systemSymbolName: symbolName, accessibilityDescription: text)
@@ -748,6 +757,14 @@ final class OverlayHUD: NSObject {
     private func isRecording(_ state: HUDState?) -> Bool {
         guard let state: HUDState = state else { return false }
         if case .recording = state {
+            return true
+        }
+        return false
+    }
+
+    private func isMeeting(_ state: HUDState?) -> Bool {
+        guard let state: HUDState = state else { return false }
+        if case .meeting = state {
             return true
         }
         return false
@@ -1050,7 +1067,7 @@ final class OverlayHUD: NSObject {
         switch state {
         case .transcribing, .cleaning, .warning:
             return
-        case .idle, .recording:
+        case .idle, .recording, .meeting:
             break
         }
         let f: NSRect = panel.frame
@@ -1064,6 +1081,7 @@ final class OverlayHUD: NSObject {
         case .transcribing: return "transcribing"
         case .cleaning: return "cleaning"
         case .warning: return "warning"
+        case .meeting: return "meeting"
         }
     }
 
