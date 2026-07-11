@@ -14,8 +14,10 @@ enum PartialCaptionScheduler {
 
 /// Captures microphone audio and accumulates it as 16 kHz mono Float32
 /// samples, the input format whisper.cpp expects.
+// Portions adapted from FluidVoice (https://github.com/altic-dev/FluidVoice), commit 1698a31, Apache License 2.0.
+
 final class AudioRecorder {
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var samples: [Float] = []
     private let sampleQueue = DispatchQueue(label: "localflow.audio.samples")
@@ -130,9 +132,42 @@ final class AudioRecorder {
                 "(gain \(gain), vad \(vadOffsetDb)/\(vadFloorDb))"
         )
 
+        // CoreAudio can leave the engine unstartable after wake-from-sleep or
+        // a Bluetooth profile flip. Retry the whole start up to 3x, recreating
+        // the engine between attempts, so a transient failure self-heals.
+        var lastError: Error?
+        for attempt in 0..<Self.maxStartAttempts {
+            do {
+                try startEngineOnce()
+                isRecording = true
+                return
+            } catch {
+                lastError = error
+                Log.error("Audio engine start failed (attempt \(attempt + 1)/\(Self.maxStartAttempts)): \(error.localizedDescription)")
+                if attempt < Self.maxStartAttempts - 1 {
+                    recreateEngine()
+                    usleep(Self.startRetryDelayUs)
+                }
+            }
+        }
+        throw lastError ?? NSError(domain: "LocalFlow", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "Failed to start audio engine",
+        ])
+    }
+
+    private static let maxStartAttempts = 3
+    private static let startRetryDelayUs: UInt32 = 150_000
+
+    /// Discards the current engine and allocates a fresh one — the reliable
+    /// way to clear a wedged AudioUnit graph before a start retry.
+    private func recreateEngine() {
+        engine = AVAudioEngine()
+        Log.info("Audio engine recreated for retry")
+    }
+
+    private func startEngineOnce() throws {
         let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+        guard let inputFormat = waitForValidInputFormat() else {
             throw NSError(domain: "LocalFlow", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "No audio input device available",
             ])
@@ -153,9 +188,30 @@ final class AudioRecorder {
             throw exception
         }
         try engine.start()
-        isRecording = true
         Log.info("Recording started (input \(Int(inputFormat.sampleRate)) Hz, \(inputFormat.channelCount) ch)")
     }
+
+    /// The input HAL can report a 0 Hz / 0 channel format for a moment after
+    /// wake-from-sleep or a device switch. Poll a few times with short delays
+    /// before giving up, so that race doesn't fail an otherwise-fine start.
+    private func waitForValidInputFormat() -> AVAudioFormat? {
+        var format = engine.inputNode.outputFormat(forBus: 0)
+        var attempt = 0
+        while format.sampleRate == 0 || format.channelCount == 0 {
+            attempt += 1
+            if attempt > Self.maxFormatAttempts {
+                Log.error("Input format still invalid after \(Self.maxFormatAttempts) retries (\(format.sampleRate) Hz, \(format.channelCount) ch)")
+                return nil
+            }
+            let delayUs: UInt32 = attempt <= 2 ? 100_000 : 300_000
+            Log.info("Input format not ready (attempt \(attempt)/\(Self.maxFormatAttempts)): \(format.sampleRate) Hz \(format.channelCount) ch — waiting")
+            usleep(delayUs)
+            format = engine.inputNode.outputFormat(forBus: 0)
+        }
+        return format
+    }
+
+    private static let maxFormatAttempts = 5
 
     /// Stops capture and returns the utterance as 16-bit PCM WAV data.
     /// Returns nil when the recording is too short to transcribe (<0.3 s).
