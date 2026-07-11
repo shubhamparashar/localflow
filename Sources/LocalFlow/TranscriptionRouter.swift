@@ -34,6 +34,28 @@ enum TranscriptionRouter {
         }
     }
 
+    /// The engine actually run by `transcribe()`, which layers an Apple Speech
+    /// fallback on top of `route()` without changing the pure decision above.
+    enum RunEngine: Equatable {
+        case parakeet
+        case appleSpeech
+        case whisper
+    }
+
+    /// Pure fallback-engine selection. When English would route to Parakeet but
+    /// its models aren't loaded yet, prefer on-device Apple Speech (if
+    /// available) over whisper, which may also still be downloading. Every
+    /// other case defers to `route()`. Testable in isolation.
+    static func runEngine(language: String, parakeetReady: Bool, appleSpeechAvailable: Bool) -> RunEngine {
+        if language == "en", parakeetReady {
+            return .parakeet
+        }
+        if language == "en", !parakeetReady, appleSpeechAvailable {
+            return .appleSpeech
+        }
+        return .whisper
+    }
+
     static var activeEngineName: String {
         route(language: Config.whisperLanguage, parakeetReady: ParakeetTranscriber.shared.isReady).engine == .parakeet
             ? "Parakeet (English)"
@@ -55,21 +77,44 @@ enum TranscriptionRouter {
             })
         }
         let language = languageOverride ?? Config.whisperLanguage
-        guard route(language: language, parakeetReady: ParakeetTranscriber.shared.isReady).engine == .parakeet else {
+        let whisper = {
             Transcriber.transcribe(wav: wav, fieldContext: fieldContext, languageOverride: languageOverride, completion: deliver)
-            return
         }
-        let started = Date()
-        ParakeetTranscriber.shared.transcribe(wav: wav) { result in
-            switch result {
-            case .success(let text):
-                let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
-                let cleaned = Transcriber.clean(text)
-                Log.info("Parakeet transcribed in \(elapsed)s: \"\(cleaned)\"")
-                deliver(.success(cleaned))
-            case .failure(let error):
-                Log.error("Parakeet failed (\(error.localizedDescription)) — falling back to whisper")
-                Transcriber.transcribe(wav: wav, fieldContext: fieldContext, languageOverride: languageOverride, completion: deliver)
+        let engine = runEngine(
+            language: language,
+            parakeetReady: ParakeetTranscriber.shared.isReady,
+            appleSpeechAvailable: AppleSpeechTranscriber.shared.isAvailable
+        )
+        switch engine {
+        case .whisper:
+            whisper()
+        case .appleSpeech:
+            Log.info("Parakeet not ready — falling back to Apple Speech")
+            AppleSpeechTranscriber.shared.transcribe(wav: wav) { result in
+                switch result {
+                case .success(let text) where !text.isEmpty:
+                    deliver(.success(Transcriber.clean(text)))
+                case .success:
+                    Log.info("Apple Speech returned empty — falling back to whisper")
+                    whisper()
+                case .failure(let error):
+                    Log.error("Apple Speech failed (\(error.localizedDescription)) — falling back to whisper")
+                    whisper()
+                }
+            }
+        case .parakeet:
+            let started = Date()
+            ParakeetTranscriber.shared.transcribe(wav: wav) { result in
+                switch result {
+                case .success(let text):
+                    let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+                    let cleaned = Transcriber.clean(text)
+                    Log.info("Parakeet transcribed in \(elapsed)s: \"\(cleaned)\"")
+                    deliver(.success(cleaned))
+                case .failure(let error):
+                    Log.error("Parakeet failed (\(error.localizedDescription)) — falling back to whisper")
+                    whisper()
+                }
             }
         }
     }

@@ -72,6 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastRawTranscript: String?
     private var sessionProfile: AppCategoryProfile?
     private var sessionFieldContext: String?
+    /// PID of the app focused when recording started — injection targets this,
+    /// not whatever is frontmost when the transcript is ready (the HUD/overlay
+    /// may have taken focus in between).
+    private var sessionTargetPid: pid_t?
 
     private static let tapMaxDuration: TimeInterval = 0.35
 
@@ -292,6 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CorrectionWatcher.shared.checkPending()
         // Captured at press time: the app the user is dictating into.
         sessionProfile = AppContext.currentProfile()
+        sessionTargetPid = AppContext.frontmostPid()
         applyPerAppLanguageMemory()
         sessionFieldContext = FieldContext.capture()
         partialCaptionRunner.cancel()
@@ -452,7 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         if self.redactionBlocks(final, profile: profile) {
                             return
                         }
-                        self.injector.inject(final)
+                        self.injector.inject(final, targetPid: self.sessionTargetPid)
                         if let offset = cursorOffsetFromEnd, offset > 0 {
                             let smartSpacePad = Config.smartSpacing && !final.hasSuffix(" ") ? 1 : 0
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

@@ -52,6 +52,10 @@ enum AppContext {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier
     }
 
+    static func frontmostPid() -> pid_t? {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+
     static func openInEditor() {
         ensureFileExists()
         NSWorkspace.shared.open(mappingFileURL)
