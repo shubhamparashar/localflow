@@ -11,3 +11,4 @@ vendor/whisper.cpp/
 # macOS
 .DS_Store
 .claude/worktrees/
+graphify-out/
