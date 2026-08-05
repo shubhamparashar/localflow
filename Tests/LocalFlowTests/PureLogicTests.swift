@@ -649,9 +649,11 @@ final class PureLogicTests {
         // The unknown-jargon path depends on spell-check services, which may
         // be inert in a headless test session — assert it only when the
         // checker demonstrably flags obvious gibberish.
+        // Not "Kysely"/real jargon — the user's spell checker may have
+        // learned those; gibberish is deterministic across machines.
         let checkerWorks = checker.checkSpelling(of: "zzxqvblorp", startingAt: 0).location != NSNotFound
         if checkerWorks {
-            #expect(CorrectionWatcher.isVocabularyShaped("Kysely", checker: checker), "unknown jargon")
+            #expect(CorrectionWatcher.isVocabularyShaped("Qyzblorptek", checker: checker), "unknown jargon")
         }
     }
 }
