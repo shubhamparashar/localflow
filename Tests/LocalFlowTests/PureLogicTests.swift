@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import LocalFlow
@@ -622,5 +623,35 @@ final class PureLogicTests {
         #expect(Config.effectiveCaptureLanguage(dictationLanguage: "hinglish") == "hinglish")
         Config.captureLanguage = "hinglish"
         #expect(Config.effectiveCaptureLanguage(dictationLanguage: "en") == "hinglish")
+    }
+}
+
+// MARK: - Glossary auto-learn hygiene
+
+@Suite struct VocabularyShapeTests {
+    @Test func capitalizedOrdinaryWordsAreNotVocabulary() {
+        let checker = NSSpellChecker.shared
+        for word in ["Alright", "Nothing", "Look", "Maybe", "Without", "Update"] {
+            #expect(!CorrectionWatcher.isVocabularyShaped(word, checker: checker), "\(word) is a sentence starter, not vocabulary")
+        }
+    }
+
+    @Test func selfEmittedLabelsNeverLearned() {
+        let checker = NSSpellChecker.shared
+        for word in ["Them", "Me", "Speaker", "Meeting"] {
+            #expect(!CorrectionWatcher.isVocabularyShaped(word, checker: checker))
+        }
+    }
+
+    @Test func realVocabularyStillDetected() {
+        let checker = NSSpellChecker.shared
+        #expect(CorrectionWatcher.isVocabularyShaped("LocalFlow", checker: checker), "mixed case")
+        // The unknown-jargon path depends on spell-check services, which may
+        // be inert in a headless test session — assert it only when the
+        // checker demonstrably flags obvious gibberish.
+        let checkerWorks = checker.checkSpelling(of: "zzxqvblorp", startingAt: 0).location != NSNotFound
+        if checkerWorks {
+            #expect(CorrectionWatcher.isVocabularyShaped("Kysely", checker: checker), "unknown jargon")
+        }
     }
 }

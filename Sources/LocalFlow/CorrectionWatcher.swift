@@ -92,14 +92,21 @@ final class CorrectionWatcher {
             .filter { $0.count >= 4 }
     }
 
-    /// Proper nouns, mixed-case identifiers, or words the system spell
-    /// checker doesn't know (jargon). Plain lowercase dictionary words are
-    /// everyday edits, not vocabulary.
-    private static func isVocabularyShaped(_ word: String, checker: NSSpellChecker) -> Bool {
-        let startsUpper = word.first?.isUppercase == true
+    /// Labels LocalFlow itself writes into notes — these must never be
+    /// "learned" back as vocabulary (a meeting note full of **Them:** lines
+    /// once promoted "Them" into the glossary, which then biased whisper).
+    private static let selfEmittedLabels: Set<String> = ["me", "them", "speaker", "meeting"]
+
+    /// Mixed-case identifiers, or words the system spell checker doesn't
+    /// know even in lowercase (jargon, names). A capitalized ordinary word
+    /// is usually just a sentence starter — checking the LOWERCASED form
+    /// against the dictionary filters those out (the old any-capitalized
+    /// rule promoted "Alright", "Nothing", "Look"… into the glossary).
+    static func isVocabularyShaped(_ word: String, checker: NSSpellChecker) -> Bool {
+        guard !selfEmittedLabels.contains(word.lowercased()) else { return false }
         let mixedCase = word.dropFirst().contains(where: { $0.isUppercase })
-        if startsUpper || mixedCase { return true }
-        let range = checker.checkSpelling(of: word, startingAt: 0)
+        if mixedCase { return true }
+        let range = checker.checkSpelling(of: word.lowercased(), startingAt: 0)
         return range.location != NSNotFound
     }
 
