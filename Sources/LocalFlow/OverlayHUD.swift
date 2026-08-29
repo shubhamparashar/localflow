@@ -452,7 +452,19 @@ final class OverlayHUD: NSObject {
         effect.onHoverChange = { [weak self] hovering in self?.hoverChanged(hovering) }
         effect.menuProvider = { [weak self] in self?.buildContextMenu() }
         effect.onDragEnded = { [weak self] center in self?.handleDragEnded(center) }
-        effect.onDragStateChanged = { [weak self] dragging in self?.isDraggingPill = dragging }
+        effect.onDragStateChanged = { [weak self] dragging in
+            guard let self else { return }
+            self.isDraggingPill = dragging
+            // A drag collapses the hover stack to the bare pill; it stays
+            // minimized after the drop until the cursor re-enters.
+            if dragging {
+                self.hoverCollapseWork?.cancel()
+                self.hoverCollapseWork = nil
+                self.isHovering = false
+                self.applyVisuals()
+                self.relayout(animated: false)
+            }
+        }
         effect.onBadgeClick = { [weak self] in self?.cycleLanguageBadge() }
 
         // Bottom-most: a color wash (only visible during the warning state)
