@@ -89,6 +89,13 @@ enum Config {
         defaults.string(forKey: "ollamaModel") ?? "llama3.2:3b"
     }
 
+    /// Model for post-meeting notes generation. Separate from `ollamaModel`
+    /// because the cleanup slot may hold a task-tuned normalizer (s1-mini)
+    /// that can't follow summarization instructions.
+    static var summaryModel: String {
+        defaults.string(forKey: "summaryModel") ?? "llama3.2:3b"
+    }
+
     /// How long Ollama keeps the cleanup model resident after a request.
     /// Well above the model default so dictations spread across a working
     /// session skip the multi-second cold reload on the next take.
@@ -300,6 +307,14 @@ enum Config {
             defaults.set(newValue.x, forKey: "hudCenterX")
             defaults.set(newValue.y, forKey: "hudCenterY")
         }
+    }
+
+    /// "left"/"right" once a drag ends near a screen edge, empty otherwise.
+    /// A docked pill keeps hugging that edge even as its width changes between
+    /// states (the stored center alone can't, since growth is center-out).
+    static var hudDockSide: String {
+        get { defaults.string(forKey: "hudDockSide") ?? "" }
+        set { defaults.set(newValue, forKey: "hudDockSide") }
     }
 
     /// Set once the user finishes (or dismisses) the first-run welcome, so the

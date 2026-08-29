@@ -34,6 +34,25 @@ private final class HUDContentView: NSVisualEffectView {
     /// The language badge's frame in this view's coordinates, updated by layout.
     /// `nil` (or a click outside it) falls through to the plain-pill toggle.
     var badgeHitFrame: NSRect?
+    /// Docked hover stack: clicks inside these route to language cycling /
+    /// the scratchpad instead of toggling dictation.
+    var globeHitFrame: NSRect?
+    var notesHitFrame: NSRect?
+    var meetingHitFrame: NSRect?
+    var onGlobeClick: (() -> Void)?
+    var onNotesClick: (() -> Void)?
+    var onMeetingClick: (() -> Void)?
+    /// When set, the plain-pill toggle only fires inside this frame (docked
+    /// hover stack: the panel is mostly transparent canvas and stray clicks
+    /// must not start a dictation).
+    var micHitFrame: NSRect?
+    /// Reports cursor movement in local coordinates while inside the view.
+    var onMouseMoved: ((NSPoint) -> Void)?
+
+    override func mouseMoved(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        onMouseMoved?(local)
+    }
     /// Fires true when a drag begins and false when it ends, so the HUD can stop
     /// repositioning the pill (e.g. on an idle→recording change) mid-drag.
     var onDragStateChanged: ((Bool) -> Void)?
@@ -61,7 +80,7 @@ private final class HUDContentView: NSVisualEffectView {
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil
         )
@@ -126,6 +145,22 @@ private final class HUDContentView: NSVisualEffectView {
             onBadgeClick?()
             return
         }
+        if let globeHitFrame, globeHitFrame.contains(local) {
+            onGlobeClick?()
+            return
+        }
+        if let notesHitFrame, notesHitFrame.contains(local) {
+            onNotesClick?()
+            return
+        }
+        if let meetingHitFrame, meetingHitFrame.contains(local) {
+            onMeetingClick?()
+            return
+        }
+        if let micHitFrame {
+            if micHitFrame.contains(local) { onClick?() }
+            return
+        }
         if bounds.contains(local) { onClick?() }
     }
 
@@ -144,26 +179,36 @@ final class OverlayHUD: NSObject {
 
     // MARK: - Layout constants
 
-    private static let pillHeight: CGFloat = 48
+    private static let pillHeight: CGFloat = 26
     private static let minPillWidth: CGFloat = 200
-    private static let minIdleWidth: CGFloat = 52
-    private static let cornerRadius: CGFloat = 24
+    private static let minIdleWidth: CGFloat = 30
+    private static let cornerRadius: CGFloat = 13
     private static let bottomMargin: CGFloat = 80
-    private static let horizontalPadding: CGFloat = 16
-    private static let iconSize: CGFloat = 20
+    private static let horizontalPadding: CGFloat = 10
+    private static let iconSize: CGFloat = 13
     private static let elementGap: CGFloat = 8
     private static let elapsedWidth: CGFloat = 36
     private static let barCount: Int = 16
     private static let barWidth: CGFloat = 3
     private static let barSpacing: CGFloat = 2
     private static let minBarHeight: CGFloat = 3
-    private static let maxBarHeight: CGFloat = 22
+    private static let maxBarHeight: CGFloat = 12
     private static let meterWidth: CGFloat =
         CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
     /// Longest a live caption is allowed to render before the pill truncates
     /// its head, keeping the newest (most relevant) words on screen.
     private static let maxCaptionWidth: CGFloat = 360
     private static let handsFreeDotDiameter: CGFloat = 6
+    // Side-dock (vertical) geometry, Wispr Flow style: idle is a hairline
+    // capsule hugging the edge; active states are a narrow vertical pill with
+    // the waveform stacked as a column of horizontally-scaling bars.
+    private static let dockIdleWidth: CGFloat = 8
+    private static let dockIdleHoverWidth: CGFloat = 22
+    private static let dockIdleHeight: CGFloat = 44
+    private static let dockActiveWidth: CGFloat = 22
+    private static let dockPadding: CGFloat = 8
+    /// Vertical spacing between hover-stack button centers (globe / mic / notes).
+    private static let dockButtonPitch: CGFloat = 38
     // Calibrated to conversational speech through a laptop mic
     // (~-45…-20 dBFS); a square-root curve keeps the bars lively in the
     // quiet half of the range instead of saturating only when shouting.
@@ -198,6 +243,10 @@ final class OverlayHUD: NSObject {
     /// Supplies whether capture mode is currently on (for the menu checkmark).
     var captureModeIsActive: (() -> Bool)?
 
+    /// Fires when the docked hover stack's notes button is clicked; opens the
+    /// Scratchpad.
+    var onOpenScratchpad: (() -> Void)?
+
     /// Fires when "Meeting Notes" is toggled from the pill's right-click menu.
     var onToggleMeeting: (() -> Void)?
 
@@ -211,6 +260,19 @@ final class OverlayHUD: NSObject {
     private var washView: NSView!
     private var borderView: NSView!
     private var iconView: NSImageView!
+    private var globeIconView: NSImageView!
+    private var notesIconView: NSImageView!
+    private var meetingIconView: NSImageView!
+    /// Dark circle backgrounds behind the docked hover-stack buttons, in
+    /// stack order: globe, mic, notes, meeting.
+    private var stackCircleViews: [NSView] = []
+    private var tooltipView: NSView!
+    private var tooltipLabel: NSTextField!
+    /// Which hover-stack button the cursor is over (0 globe, 1 mic, 2 notes,
+    /// 3 meeting).
+    private var hoveredStackIndex: Int?
+    private static let stackTooltips: [String] = ["Change language", "Dictate ⌥", "Scratchpad", "Meeting notes"]
+    private static let dockCircleDiameter: CGFloat = 30
     private var textLabel: NSTextField!
     private var elapsedLabel: NSTextField!
     private var badgeChip: NSView!
@@ -374,6 +436,9 @@ final class OverlayHUD: NSObject {
         effect.material = .hudWindow
         effect.blendingMode = .behindWindow
         effect.state = .active
+        // Semi-transparent so the pill obscures as little of the screen
+        // beneath it as possible.
+        effect.alphaValue = 0.55
         effect.appearance = NSAppearance(named: .darkAqua)
         effect.maskImage = Self.roundedRectMask(cornerRadius: Self.cornerRadius)
         // Views don't clip subviews by default on macOS 14 — without this the
@@ -403,6 +468,56 @@ final class OverlayHUD: NSObject {
         iconView = NSImageView(frame: .zero)
         iconView.imageScaling = .scaleProportionallyUpOrDown
         effect.addSubview(iconView)
+
+        globeIconView = NSImageView(frame: .zero)
+        globeIconView.imageScaling = .scaleProportionallyUpOrDown
+        globeIconView.image = NSImage(systemSymbolName: "globe", accessibilityDescription: "Language")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
+        globeIconView.contentTintColor = NSColor.white.withAlphaComponent(0.8)
+        globeIconView.isHidden = true
+        effect.addSubview(globeIconView)
+
+        notesIconView = NSImageView(frame: .zero)
+        notesIconView.imageScaling = .scaleProportionallyUpOrDown
+        notesIconView.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "Scratchpad")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
+        notesIconView.contentTintColor = NSColor.white.withAlphaComponent(0.8)
+        notesIconView.isHidden = true
+        effect.addSubview(notesIconView)
+
+        meetingIconView = NSImageView(frame: .zero)
+        meetingIconView.imageScaling = .scaleProportionallyUpOrDown
+        meetingIconView.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "Meeting notes")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold))
+        meetingIconView.contentTintColor = NSColor.white.withAlphaComponent(0.8)
+        meetingIconView.isHidden = true
+        effect.addSubview(meetingIconView)
+
+        stackCircleViews = (0..<4).map { _ in
+            let circle: NSView = NSView(frame: .zero)
+            circle.wantsLayer = true
+            circle.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.85).cgColor
+            circle.layer?.cornerRadius = Self.dockCircleDiameter / 2
+            circle.isHidden = true
+            effect.addSubview(circle, positioned: .below, relativeTo: iconView)
+            return circle
+        }
+
+        tooltipView = NSView(frame: .zero)
+        tooltipView.wantsLayer = true
+        tooltipView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.85).cgColor
+        tooltipView.layer?.cornerRadius = 14
+        tooltipView.isHidden = true
+        effect.addSubview(tooltipView)
+        tooltipLabel = NSTextField(labelWithString: "")
+        tooltipLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        tooltipLabel.textColor = .white
+        tooltipView.addSubview(tooltipLabel)
+
+        effect.onGlobeClick = { [weak self] in self?.cycleLanguageBadge() }
+        effect.onNotesClick = { [weak self] in self?.onOpenScratchpad?() }
+        effect.onMeetingClick = { [weak self] in self?.onToggleMeeting?() }
+        effect.onMouseMoved = { [weak self] point in self?.stackMouseMoved(point) }
 
         handsFreeDotView = NSView(frame: .zero)
         handsFreeDotView.wantsLayer = true
@@ -623,6 +738,77 @@ final class OverlayHUD: NSObject {
     /// resize moves the tracking rect under the cursor, which can fire
     /// spurious exit/enter pairs mid-animation — without the delay those
     /// re-trigger the resize and the pill visibly jitters.
+    /// Tracks which hover-stack button the cursor is over, highlighting its
+    /// circle and showing the Wispr-style tooltip pill beside it.
+    private func stackMouseMoved(_ point: NSPoint) {
+        guard !globeIconView.isHidden else { return }
+        let frames: [NSRect?] = [
+            contentView.globeHitFrame,
+            contentView.micHitFrame,
+            contentView.notesHitFrame,
+            contentView.meetingHitFrame,
+        ]
+        let hit: Int? = frames.firstIndex { $0?.contains(point) == true }
+        if hit != hoveredStackIndex {
+            hoveredStackIndex = hit
+            updateStackHoverAndMask()
+        }
+    }
+
+    private func updateStackHover() {
+        for (index, circle) in stackCircleViews.enumerated() {
+            let highlighted: Bool = index == hoveredStackIndex
+            circle.layer?.backgroundColor = highlighted
+                ? NSColor(white: 0.25, alpha: 0.95).cgColor
+                : NSColor.black.withAlphaComponent(0.85).cgColor
+        }
+        guard let index = hoveredStackIndex else {
+            tooltipView.isHidden = true
+            return
+        }
+        tooltipLabel.stringValue = Self.stackTooltips[index]
+        tooltipLabel.sizeToFit()
+        let textSize: NSSize = tooltipLabel.frame.size
+        let tooltipSize: NSSize = NSSize(width: textSize.width + 24, height: 28)
+        let circleFrame: NSRect = stackCircleViews[index].frame
+        if stackAxisVertical {
+            let onRight: Bool = Config.hudDockSide != "left"
+            let tooltipX: CGFloat = onRight
+                ? circleFrame.minX - 8 - tooltipSize.width
+                : circleFrame.maxX + 8
+            tooltipView.frame = NSRect(
+                x: tooltipX,
+                y: circleFrame.midY - tooltipSize.height / 2,
+                width: tooltipSize.width,
+                height: tooltipSize.height
+            )
+        } else {
+            let bounds: NSRect = contentView.bounds
+            let clampedX: CGFloat = min(
+                max(circleFrame.midX - tooltipSize.width / 2, 2),
+                bounds.width - tooltipSize.width - 2
+            )
+            tooltipView.frame = NSRect(
+                x: clampedX,
+                y: circleFrame.maxY + 8,
+                width: tooltipSize.width,
+                height: tooltipSize.height
+            )
+        }
+        tooltipLabel.frame = NSRect(
+            x: (tooltipSize.width - textSize.width) / 2,
+            y: (tooltipSize.height - textSize.height) / 2,
+            width: textSize.width,
+            height: textSize.height
+        )
+        tooltipView.isHidden = false
+    }
+
+    private func updateStackHoverAndMask() {
+        updateStackHover()
+        refreshStackMask()
+    }
+
     private func hoverChanged(_ hovering: Bool) {
         hoverCollapseWork?.cancel()
         hoverCollapseWork = nil
@@ -668,7 +854,7 @@ final class OverlayHUD: NSObject {
             recordingCaption = ""
             resetBars()
         }
-        elapsedLabel.isHidden = !recording
+        elapsedLabel.isHidden = true
         for bar in barViews {
             bar.isHidden = !recording
         }
@@ -697,29 +883,28 @@ final class OverlayHUD: NSObject {
             symbolName = "mic"
             iconColor = NSColor.white.withAlphaComponent(isHovering ? 0.85 : 0.6)
             text = "Hold ⌥ or click to dictate"
-            showText = isHovering
-        case .recording(let handsFree):
+            showText = false
+        case .recording:
             if warningActive {
                 symbolName = "exclamationmark.triangle.fill"
                 iconColor = .systemOrange
                 text = "No mic input — check input volume"
-            } else if !recordingCaption.isEmpty {
-                symbolName = "mic.fill"
-                iconColor = .systemRed
-                text = recordingCaption
             } else {
                 symbolName = "mic.fill"
                 iconColor = .systemRed
-                text = handsFree ? "Recording (hands-free)…" : "Recording…"
+                text = ""
+                showText = false
             }
         case .transcribing:
             symbolName = "waveform"
             iconColor = .white
             text = "Transcribing…"
+            showText = false
         case .cleaning:
             symbolName = "sparkles"
             iconColor = .white
             text = "Cleaning…"
+            showText = false
         case .warning(let message):
             symbolName = "exclamationmark.triangle.fill"
             iconColor = .systemOrange
@@ -730,13 +915,46 @@ final class OverlayHUD: NSObject {
             text = "Meeting notes on — click to stop"
             showText = isHovering
         }
-        let config: NSImage.SymbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
+        let config: NSImage.SymbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
         let image: NSImage? = NSImage(systemSymbolName: symbolName, accessibilityDescription: text)
         iconView.image = image?.withSymbolConfiguration(config)
         iconView.contentTintColor = iconColor
+        // Recording is signalled by the waveform and busy by the shimmer, so
+        // the glyph only earns its space when the pill is idle or warning.
+        // A side-docked idle sliver has no room for it until hovered.
+        let docked: Bool = isDockedVertical
+        switch state {
+        case .recording: iconView.isHidden = !warningActive
+        case .transcribing, .cleaning: iconView.isHidden = true
+        case .idle: iconView.isHidden = !isHovering
+        default: iconView.isHidden = false
+        }
+        if docked {
+            textLabel.isHidden = true
+            badgeLabel.isHidden = true
+            badgeChip.isHidden = true
+            handsFreeDotView.isHidden = true
+        }
+        // Also shown during a meeting so the red meeting button can stop it.
+        let showHoverStack: Bool = (isIdle(state) || isMeeting(state)) && isHovering
+        globeIconView.isHidden = !showHoverStack
+        notesIconView.isHidden = !showHoverStack
+        meetingIconView.isHidden = !showHoverStack
+        let meetingOn: Bool = meetingModeIsActive?() ?? false
+        meetingIconView.contentTintColor = meetingOn
+            ? .systemRed
+            : NSColor.white.withAlphaComponent(0.8)
+        for circle in stackCircleViews {
+            circle.isHidden = !showHoverStack
+        }
+        if !showHoverStack {
+            hoveredStackIndex = nil
+            tooltipView.isHidden = true
+        }
         textLabel.stringValue = showText ? text : ""
         textLabel.isHidden = !showText
-        let showBadge: Bool = isIdle(state)
+        // The hover stack's globe button replaced the language badge.
+        let showBadge: Bool = false
         badgeLabel.stringValue = showBadge ? Config.languageBadge(for: Config.whisperLanguage) : ""
         badgeLabel.isHidden = !showBadge
         badgeChip.isHidden = !showBadge
@@ -821,7 +1039,239 @@ final class OverlayHUD: NSObject {
         view.frame = frame
     }
 
+    /// The mask image doubles as the layer mask for every subview, so the
+    /// hover stack's mask must be the union of its visible shapes (circles +
+    /// tooltip), not empty: an empty mask blanks the buttons themselves.
+    private func refreshStackMask() {
+        let size: NSSize = contentView.bounds.size
+        guard size.width > 0, size.height > 0 else { return }
+        let circleFrames: [NSRect] = stackCircleViews.map { $0.frame }
+        let tooltipFrame: NSRect? = tooltipView.isHidden ? nil : tooltipView.frame
+        let mask: NSImage = NSImage(size: size, flipped: false) { _ in
+            NSColor.black.setFill()
+            for frame in circleFrames {
+                NSBezierPath(ovalIn: frame).fill()
+            }
+            if let tooltipFrame {
+                NSBezierPath(roundedRect: tooltipFrame, xRadius: 14, yRadius: 14).fill()
+            }
+            return true
+        }
+        contentView.maskImage = mask
+    }
+
+    /// Capsule rounding must track the pill's smallest dimension: the docked
+    /// sliver is far narrower than the resting corner radius, and a stale wide
+    /// radius renders it as a blob instead of a capsule.
+    private func applyCornerRadius(for size: NSSize) {
+        let radius: CGFloat = min(Self.cornerRadius, size.width / 2, size.height / 2)
+        contentView.maskImage = Self.roundedRectMask(cornerRadius: radius)
+        contentView.layer?.cornerRadius = radius
+        washView.layer?.cornerRadius = radius
+        borderView.layer?.cornerRadius = radius
+    }
+
+    private var isDockedVertical: Bool {
+        let side: String = Config.hudDockSide
+        return side == "left" || side == "right"
+    }
+
+    /// True while the visible hover stack is the side-dock column (tooltips
+    /// beside the buttons); false for the horizontal row (tooltips above).
+    private var stackAxisVertical = false
+
+    /// Places the four stack circles + icons and hit frames. Vertical axis:
+    /// a column flush to the docked edge. Horizontal axis: a centered row
+    /// along the bottom of the panel, tooltip space above.
+    private func layoutStackButtons(size: NSSize, verticalAxis: Bool) {
+        stackAxisVertical = verticalAxis
+        contentView.layer?.cornerRadius = 0
+        contentView.alphaValue = 1
+        borderView.isHidden = true
+        let diameter: CGFloat = Self.dockCircleDiameter
+        let pitch: CGFloat = Self.dockButtonPitch
+        let icons: [NSImageView] = [globeIconView, iconView, notesIconView, meetingIconView]
+        for index in 0..<4 {
+            let offset: CGFloat = (1.5 - CGFloat(index)) * pitch
+            let center: NSPoint
+            if verticalAxis {
+                let onRight: Bool = Config.hudDockSide != "left"
+                let x: CGFloat = onRight
+                    ? size.width - Self.dockPadding - diameter / 2
+                    : Self.dockPadding + diameter / 2
+                center = NSPoint(x: x, y: size.height / 2 + offset)
+            } else {
+                center = NSPoint(x: size.width / 2 - offset, y: Self.dockPadding + diameter / 2)
+            }
+            setFrame(
+                NSRect(
+                    x: center.x - diameter / 2,
+                    y: center.y - diameter / 2,
+                    width: diameter,
+                    height: diameter
+                ),
+                on: stackCircleViews[index],
+                animated: false
+            )
+            setFrame(
+                NSRect(
+                    x: center.x - Self.iconSize / 2,
+                    y: center.y - Self.iconSize / 2,
+                    width: Self.iconSize,
+                    height: Self.iconSize
+                ),
+                on: icons[index],
+                animated: false
+            )
+        }
+        contentView.globeHitFrame = stackCircleViews[0].frame.insetBy(dx: -4, dy: -4)
+        contentView.micHitFrame = stackCircleViews[1].frame.insetBy(dx: -4, dy: -4)
+        contentView.notesHitFrame = stackCircleViews[2].frame.insetBy(dx: -4, dy: -4)
+        contentView.meetingHitFrame = stackCircleViews[3].frame.insetBy(dx: -4, dy: -4)
+        updateStackHoverAndMask()
+    }
+
+    /// Side-docked layout: everything renders as a narrow vertical pill.
+    private func layoutVertical(animated: Bool) {
+        let recording: Bool = isRecording(currentState)
+        let busy: Bool = isBusy(currentState)
+        let showIcon: Bool = !iconView.isHidden
+        let meterLength: CGFloat = Self.meterWidth
+
+        let hoverStack: Bool = !globeIconView.isHidden
+
+        let size: NSSize
+        if recording && !warningActive {
+            size = NSSize(width: Self.dockActiveWidth, height: meterLength + Self.dockPadding * 2)
+        } else if busy {
+            size = NSSize(width: Self.dockActiveWidth, height: meterLength + Self.dockPadding * 2)
+        } else if hoverStack {
+            // Wide transparent canvas: a column of circles flush to the docked
+            // edge plus room for the tooltip pill beside the hovered button.
+            size = NSSize(width: 190, height: Self.dockButtonPitch * 4 + Self.dockPadding * 2)
+        } else if showIcon {
+            size = NSSize(width: Self.dockIdleHoverWidth + 4, height: Self.dockIdleHoverWidth + 4)
+        } else {
+            size = NSSize(width: Self.dockIdleWidth, height: Self.dockIdleHeight)
+        }
+
+        let center: NSPoint = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+        var panelFrame: NSRect = panel.frame
+        panelFrame.size = size
+        panelFrame.origin = NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+        if animated {
+            panel.animator().setFrame(panelFrame, display: true)
+        } else {
+            panel.setFrame(panelFrame, display: false)
+        }
+        applyCornerRadius(for: size)
+
+        // The idle sliver reads as a bright outline (like Wispr's docked tab);
+        // every other state keeps the standard faint hairline.
+        let sliver: Bool = !recording && !busy && !showIcon && !hoverStack
+        borderView.layer?.borderColor = NSColor.white
+            .withAlphaComponent(sliver ? 0.7 : 0.08).cgColor
+
+        contentView.badgeHitFrame = nil
+        contentView.globeHitFrame = nil
+        contentView.notesHitFrame = nil
+        contentView.meetingHitFrame = nil
+        contentView.micHitFrame = nil
+        // The stack renders as free-floating circles on a transparent canvas;
+        // every other docked state is the usual blurred capsule.
+        contentView.alphaValue = hoverStack ? 1 : 0.55
+        borderView.isHidden = hoverStack
+        let midX: CGFloat = size.width / 2
+        if hoverStack {
+            layoutStackButtons(size: size, verticalAxis: true)
+        } else if showIcon {
+            setFrame(
+                NSRect(
+                    x: midX - Self.iconSize / 2,
+                    y: size.height / 2 - Self.iconSize / 2,
+                    width: Self.iconSize,
+                    height: Self.iconSize
+                ),
+                on: iconView,
+                animated: animated
+            )
+        }
+        if recording {
+            let topY: CGFloat = (size.height - meterLength) / 2
+            for (index, bar) in barViews.enumerated() {
+                let barLength: CGFloat = max(bar.frame.width, Self.minBarHeight)
+                setFrame(
+                    NSRect(
+                        x: midX - barLength / 2,
+                        y: topY + CGFloat(index) * (Self.barWidth + Self.barSpacing),
+                        width: barLength,
+                        height: Self.barWidth
+                    ),
+                    on: bar,
+                    animated: animated
+                )
+            }
+        } else if busy {
+            setFrame(
+                NSRect(x: midX - 2, y: (size.height - meterLength) / 2, width: 4, height: meterLength),
+                on: shimmerView,
+                animated: animated
+            )
+        }
+    }
+
     private func layoutContent(animated: Bool) {
+        if isDockedVertical {
+            layoutVertical(animated: animated)
+            return
+        }
+        borderView.isHidden = false
+        contentView.alphaValue = 0.55
+        contentView.globeHitFrame = nil
+        contentView.notesHitFrame = nil
+        contentView.meetingHitFrame = nil
+        contentView.micHitFrame = nil
+        contentView.badgeHitFrame = nil
+
+        // Untouched idle pill minimizes to a thin Wispr-style bar; hovering
+        // (or any active state) restores the full capsule.
+        if isIdle(currentState) && !isHovering {
+            let size: NSSize = NSSize(width: 44, height: 8)
+            let center: NSPoint = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+            var panelFrame: NSRect = panel.frame
+            panelFrame.size = size
+            panelFrame.origin = NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+            if animated {
+                panel.animator().setFrame(panelFrame, display: true)
+            } else {
+                panel.setFrame(panelFrame, display: false)
+            }
+            applyCornerRadius(for: size)
+            borderView.layer?.borderColor = NSColor.white.withAlphaComponent(0.7).cgColor
+            return
+        }
+
+        // Idle/meeting + hovering (not side-docked): the option buttons as a
+        // horizontal row, tooltip space above.
+        if (isIdle(currentState) || isMeeting(currentState)) && isHovering {
+            let size: NSSize = NSSize(
+                width: Self.dockButtonPitch * 4 + Self.dockPadding * 2,
+                height: Self.dockPadding + Self.dockCircleDiameter + 44
+            )
+            let center: NSPoint = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+            var panelFrame: NSRect = panel.frame
+            panelFrame.size = size
+            panelFrame.origin = NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+            if animated {
+                panel.animator().setFrame(panelFrame, display: true)
+            } else {
+                panel.setFrame(panelFrame, display: false)
+            }
+            layoutStackButtons(size: size, verticalAxis: false)
+            return
+        }
+        applyCornerRadius(for: NSSize(width: Self.minPillWidth, height: Self.pillHeight))
+        borderView.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
         textLabel.sizeToFit()
         elapsedLabel.sizeToFit()
         badgeLabel.sizeToFit()
@@ -835,20 +1285,22 @@ final class OverlayHUD: NSObject {
             ? min(textLabel.frame.width, Self.maxCaptionWidth)
             : textLabel.frame.width
 
-        var width: CGFloat = Self.horizontalPadding + Self.iconSize
-        if showText {
-            width += Self.elementGap + textWidth
+        let showIcon: Bool = !iconView.isHidden
+        var width: CGFloat = Self.horizontalPadding
+        if showIcon {
+            width += Self.iconSize
         }
-        if recording {
-            width += Self.elementGap + Self.elapsedWidth + Self.elementGap + Self.meterWidth
-        } else if busy {
-            width += Self.elementGap + Self.meterWidth
+        if showText {
+            width += (showIcon ? Self.elementGap : 0) + textWidth
+        }
+        if recording || busy {
+            width += ((showIcon || showText) ? Self.elementGap : 0) + Self.meterWidth
         }
         if showBadge {
             width += Self.elementGap + badgeLabel.frame.width + 12
         }
         width += Self.horizontalPadding
-        width = max(width, idleCollapsed ? Self.minIdleWidth : Self.minPillWidth)
+        width = max(width, Self.minIdleWidth)
 
         // Resize about the pill's center so a width change (idle↔recording or
         // hover-expand) grows symmetrically instead of from the bottom-left
@@ -979,7 +1431,22 @@ final class OverlayHUD: NSObject {
     private func positionPanel(initial: Bool, animated: Bool) {
         guard !isDraggingPill else { return }
         if Config.hudHasCustomPosition {
-            setCenter(clampOnScreen(Config.hudCenter), animated: animated)
+            var center: CGPoint = clampOnScreen(Config.hudCenter)
+            // A docked pill re-derives its x from the edge on every pass, so a
+            // state-change width difference can't peel it off the edge.
+            let dock: String = Config.hudDockSide
+            if !dock.isEmpty,
+               let screen = NSScreen.screens.first(where: { NSMouseInRect(center, $0.frame, false) }) {
+                let frame: NSRect = screen.visibleFrame
+                let halfW: CGFloat = panel.frame.width / 2
+                switch dock {
+                case "left": center.x = frame.minX + Self.edgeInset + halfW
+                case "right": center.x = frame.maxX - Self.edgeInset - halfW
+                case "bottom": center.y = screen.frame.minY + Self.edgeInset + panel.frame.height / 2
+                default: break
+                }
+            }
+            setCenter(center, animated: animated)
             return
         }
         let target: NSScreen? = initial ? cursorScreen() : (panel.screen ?? NSScreen.main)
@@ -1044,16 +1511,59 @@ final class OverlayHUD: NSObject {
 
     // MARK: - Drag persistence
 
+    /// Release within this distance of a screen's left/right edge docks the
+    /// pill flush to that edge.
+    private static let edgeSnapMargin: CGFloat = 48
+    private static let bottomSnapMargin: CGFloat = 120
+    private static let edgeInset: CGFloat = 4
+
     private func handleDragEnded(_ center: CGPoint) {
+        var snapped: CGPoint = center
+        var dock: String = ""
+        // Nearest-screen fallback: edge drops routinely overshoot the screen
+        // bounds by a few points, and a containment-only lookup then skips
+        // snapping entirely.
+        let dropScreen: NSScreen? = NSScreen.screens.first { NSMouseInRect(center, $0.frame, false) }
+            ?? NSScreen.screens.min {
+                squaredDistance(from: center, to: $0.frame) < squaredDistance(from: center, to: $1.frame)
+            }
+        if let screen = dropScreen {
+            let frame: NSRect = screen.visibleFrame
+            let halfW: CGFloat = panel.frame.width / 2
+            if center.x - halfW < frame.minX + Self.edgeSnapMargin {
+                snapped.x = frame.minX + Self.edgeInset + halfW
+                dock = "left"
+            } else if center.x + halfW > frame.maxX - Self.edgeSnapMargin {
+                snapped.x = frame.maxX - Self.edgeInset - halfW
+                dock = "right"
+            } else if center.y - panel.frame.height / 2 < frame.minY + Self.bottomSnapMargin {
+                // Bottom snap pins flush to the PHYSICAL screen edge (not the
+                // visible frame): the panel floats above the Dock, and sitting
+                // at visibleFrame.minY reads as "won't stay at the bottom".
+                // The zone is deliberately generous: drops aimed at "the
+                // bottom" land tens of points above the actual edge.
+                snapped.y = screen.frame.minY + Self.edgeInset + panel.frame.height / 2
+                dock = "bottom"
+            }
+        }
+        let dockChanged: Bool = dock != Config.hudDockSide
         Config.hudHasCustomPosition = true
-        Config.hudCenter = center
-        Log.info("Flow-Bar moved to (\(Int(center.x)), \(Int(center.y)))")
+        Config.hudCenter = snapped
+        Config.hudDockSide = dock
+        if dockChanged {
+            applyVisuals()
+            relayout(animated: true)
+        } else if snapped != center {
+            setCenter(snapped, animated: true)
+        }
+        Log.info("Flow-Bar moved to (\(Int(snapped.x)), \(Int(snapped.y))) dock=\(dock.isEmpty ? "none" : dock)")
     }
 
     /// Clears the saved position and snaps the pill back to bottom-center.
     func resetPosition() {
         performOnMain {
             Config.hudHasCustomPosition = false
+            Config.hudDockSide = ""
             guard let panel: NSPanel = self.panel, panel.isVisible else { return }
             self.positionPanel(initial: false, animated: false)
             Log.info("Flow-Bar position reset to default")
@@ -1142,13 +1652,20 @@ final class OverlayHUD: NSObject {
     /// through a short `NSAnimationContext` group so consecutive samples blend
     /// into a smooth waveform instead of snapping bar-to-bar.
     private func paintBars(animated: Bool) {
+        let vertical: Bool = isDockedVertical
         let midY: CGFloat = Self.pillHeight / 2
+        let midX: CGFloat = (panel?.frame.width ?? Self.dockActiveWidth) / 2
         let applyHeights: () -> Void = {
-            for (index, height) in self.levelHistory.enumerated() where index < self.barViews.count {
+            for (index, level) in self.levelHistory.enumerated() where index < self.barViews.count {
                 let bar: NSView = self.barViews[index]
                 var frame: NSRect = bar.frame
-                frame.origin.y = midY - height / 2
-                frame.size.height = height
+                if vertical {
+                    frame.origin.x = midX - level / 2
+                    frame.size.width = level
+                } else {
+                    frame.origin.y = midY - level / 2
+                    frame.size.height = level
+                }
                 self.setFrame(frame, on: bar, animated: animated)
             }
         }

@@ -350,24 +350,41 @@ enum OllamaCleaner {
         maxTokens: Int? = nil,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        var request = URLRequest(url: URL(string: "\(baseURL)/api/chat")!)
+        // S1 Mini is a task-tuned normalizer: it ignores arbitrary system
+        // prompts and only produces output when prompted in its exact training
+        // format (fixed system line, control line, empty think block). Ollama's
+        // chat endpoint renders the GGUF's embedded thinking template, which
+        // yields empty output, so this path must go through /api/generate raw.
+        let isS1 = Config.ollamaModel.lowercased().contains("s1-mini")
+        let endpoint = isS1 ? "/api/generate" : "/api/chat"
+        var request = URLRequest(url: URL(string: "\(baseURL)\(endpoint)")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = timeout
-        var options: [String: Any] = ["temperature": 0.2]
+        var options: [String: Any] = ["temperature": isS1 ? 0 : 0.2]
         if let maxTokens {
             options["num_predict"] = maxTokens
         }
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": Config.ollamaModel,
-            "messages": [
-                ["role": "system", "content": system],
-                ["role": "user", "content": user],
-            ],
             "stream": false,
             "keep_alive": Config.ollamaKeepAlive,
             "options": options,
         ]
+        if isS1 {
+            let s1System = "You are a text normalizer for speech-to-text transcripts. "
+                + "The input begins with a control line specifying the styling, structure, and context settings; "
+                + "clean the transcript to match those settings and output only the cleaned text."
+            payload["raw"] = true
+            payload["prompt"] = "<|im_start|>system\n\(s1System)<|im_end|>\n"
+                + "<|im_start|>user\n[Styling: semi-formal] [Structure: prose] [Context: general]\n\(user)<|im_end|>\n"
+                + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        } else {
+            payload["messages"] = [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user],
+            ]
+        }
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
 
         let started = Date()
@@ -378,11 +395,10 @@ enum OllamaCleaner {
                 DispatchQueue.main.async { completion(.failure(error)) }
                 return
             }
-            guard let data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let message = json["message"] as? [String: Any],
-                  let content = message["content"] as? String
-            else {
+            let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let chatContent = (json?["message"] as? [String: Any])?["content"] as? String
+            let generateContent = json?["response"] as? String
+            guard let content = chatContent ?? generateContent else {
                 let err = NSError(domain: "LocalFlow", code: 3, userInfo: [
                     NSLocalizedDescriptionKey: "Unexpected Ollama response",
                 ])

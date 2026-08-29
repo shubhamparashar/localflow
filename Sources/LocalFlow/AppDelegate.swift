@@ -171,6 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.onToggleCapture = { [weak self] in self?.toggleCaptureMode() }
         hud.captureModeIsActive = { [weak self] in self?.captureModeActive ?? false }
         hud.onToggleMeeting = { [weak self] in self?.toggleMeetingMode() }
+        hud.onOpenScratchpad = { [weak self] in self?.scratchpad.show() }
         hud.meetingModeIsActive = { [weak self] in self?.meetingModeActive ?? false }
         settings.onChanged = { [weak self] in
             self?.rebuildMenu()
@@ -508,20 +509,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             meetingSession.appendMicChunk(text: text, chunkStartedAt: captureChunkStartedAt)
             return
         }
-        guard Config.speakerLabelsEnabled, SpeakerDiarizer.shared.isReady else {
-            scratchpad.append(text + "\n\n")
-            return
-        }
-        let samples = ParakeetTranscriber.floatSamples(fromWav: wav)
-        SpeakerDiarizer.shared.diarize(samples: samples) { [weak self] segments in
-            guard let self else { return }
-            guard let speakerId = SpeakerDiarizer.dominantSpeaker(segments) else {
-                self.scratchpad.append(text + "\n\n")
-                return
-            }
-            let name = SpeakerDiarizer.shared.name(for: speakerId)
-            self.scratchpad.append("**\(name):** " + text + "\n\n")
-        }
+        // Mic-only capture is always the user's own voice: diarizing it only
+        // ever mislabels chunks with stale profile names. Speaker labels stay
+        // a Meeting Mode (system-audio) concern.
+        scratchpad.append(text + "\n\n")
     }
 
     // MARK: - Capture mode (long-form notes into the Scratchpad)

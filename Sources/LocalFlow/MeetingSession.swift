@@ -51,6 +51,9 @@ final class MeetingSession {
     /// Set false at finish() so transcriptions still in flight when the
     /// meeting ends are dropped instead of appearing after the closing line.
     private var acceptingAppends = false
+    /// The session's own copy of every appended line, so notes generation
+    /// never has to read back (or parse) the shared Scratchpad.
+    private var transcriptLines: [String] = []
 
     init(scratchpad: ScratchpadController) {
         self.scratchpad = scratchpad
@@ -64,6 +67,7 @@ final class MeetingSession {
         guard !isActive else { return }
         isActive = true
         acceptingAppends = true
+        transcriptLines = []
         startedAt = Date()
         let time = startedAt.formatted(date: .omitted, time: .shortened)
         scratchpad.append("— Meeting \(time) —\n")
@@ -104,6 +108,21 @@ final class MeetingSession {
         }
         let minutes = max(1, Int(Date().timeIntervalSince(startedAt) / 60))
         scratchpad.append("— Meeting ended, \(minutes) min —\n\n")
+        generateNotes()
+    }
+
+    private func generateNotes() {
+        guard !transcriptLines.isEmpty else { return }
+        let transcript = transcriptLines.joined(separator: "\n")
+        scratchpad.append("Generating meeting notes…\n\n")
+        MeetingNotesGenerator.generate(transcript: transcript) { [weak self] notes in
+            guard let self else { return }
+            if let notes {
+                self.scratchpad.append(notes + "\n\n")
+            } else {
+                self.scratchpad.append("(meeting notes unavailable - is Ollama running?)\n\n")
+            }
+        }
     }
 
     /// One mic chunk finished transcribing — append it labeled "Me", using
@@ -112,6 +131,7 @@ final class MeetingSession {
         guard !text.isEmpty, acceptingAppends else { return }
         let cleaned = MeetingFormatting.strippingLeadingLabels(text)
         let line = MeetingFormatting.prefixedLine(at: chunkStartedAt, speaker: "Me", text: cleaned)
+        transcriptLines.append(line)
         scratchpad.append(line + "\n\n")
     }
 
@@ -160,6 +180,7 @@ final class MeetingSession {
         }
         let cleaned = MeetingFormatting.strippingLeadingLabels(text)
         let line = MeetingFormatting.prefixedLine(at: chunkStartedAt, speaker: speaker, text: cleaned)
+        transcriptLines.append(line)
         scratchpad.append(line + "\n\n")
     }
 }
