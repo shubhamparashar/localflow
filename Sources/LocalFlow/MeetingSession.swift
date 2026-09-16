@@ -38,149 +38,148 @@ enum MeetingFormatting {
     }
 }
 
-/// Orchestrates one Meeting Mode session: the existing mic capture-mode loop
-/// (chunks always labeled "Me") plus a `SystemAudioRecorder` loop for the
-/// other side of the call, both landing in the Scratchpad with a wall-clock
-/// prefix. Kept out of `AppDelegate` so meeting-specific state doesn't bloat
-/// the god object further.
+/// Keeps a meeting open until both audio streams and their transcriptions drain.
 final class MeetingSession {
-    private let scratchpad: ScratchpadController
+    private let notebook: MeetingNotebookController
     private let systemAudio = SystemAudioRecorder()
-    private var startedAt: Date = .distantPast
+    private var meetingID: UUID?
+    private var pendingChunks = 0
+    private var systemStopped = false
     private(set) var isActive = false
-    /// Set false at finish() so transcriptions still in flight when the
-    /// meeting ends are dropped instead of appearing after the closing line.
-    private var acceptingAppends = false
-    /// The session's own copy of every appended line, so notes generation
-    /// never has to read back (or parse) the shared Scratchpad.
-    private var transcriptLines: [String] = []
+    var isBusy: Bool { meetingID != nil }
+    var onFinished: (() -> Void)?
 
-    init(scratchpad: ScratchpadController) {
-        self.scratchpad = scratchpad
+    init(notebook: MeetingNotebookController) {
+        self.notebook = notebook
     }
 
-    /// Appends the session header, starts the system-audio loop, and starts
-    /// the diarizer session once (not per chunk). The mic side is driven by
-    /// AppDelegate's existing capture-mode loop — this call only arms the
-    /// system-audio half and the Scratchpad framing.
     func start() {
-        guard !isActive else { return }
+        guard !isBusy else { return }
+        let id = notebook.beginMeeting()
+        meetingID = id
         isActive = true
-        acceptingAppends = true
-        transcriptLines = []
-        startedAt = Date()
-        let time = startedAt.formatted(date: .omitted, time: .shortened)
-        scratchpad.append("— Meeting \(time) —\n")
-        scratchpad.show()
+        systemStopped = false
+        pendingChunks = 0
         if Config.speakerLabelsEnabled, SpeakerDiarizer.shared.isReady {
             SpeakerDiarizer.shared.startSession()
         }
         Config.meetingModeActive = true
         systemAudio.onChunk = { [weak self] samples in
-            self?.handleSystemChunk(samples, chunkStartedAt: Date())
+            let startedAt = Date().addingTimeInterval(-Double(samples.count) / 16000)
+            DispatchQueue.main.async {
+                self?.handleSystemChunk(samples, chunkStartedAt: startedAt, meetingID: id)
+            }
         }
-        systemAudio.start { ok in
+        systemAudio.start { [weak self] ok in
+            guard let self, self.meetingID == id else { return }
             if !ok {
+                self.notebook.report(message: "System audio unavailable. Recording microphone only.", for: id)
                 Log.error("Meeting mode: system audio unavailable, continuing with mic-only notes")
             }
         }
     }
 
-    /// Stops the system-audio loop (flushing any in-flight chunk first),
-    /// persists the diarizer session once, and appends the closing line.
+    func microphoneUnavailable() {
+        guard let id = meetingID else { return }
+        notebook.report(message: "Microphone unavailable. Recording system audio only.", for: id)
+    }
+
+    /// Reserve the mic chunk before its delayed stop and transcription begin.
+    func beginMicChunk() -> UUID? {
+        guard isActive, let id = meetingID else { return nil }
+        pendingChunks += 1
+        return id
+    }
+
+    func completeMicChunk(text: String?, chunkStartedAt: Date, meetingID id: UUID) {
+        guard meetingID == id else { return }
+        if let text, !text.isEmpty {
+            append(text: text, speaker: "Me", chunkStartedAt: chunkStartedAt, meetingID: id)
+        }
+        completeChunk(meetingID: id)
+    }
+
     func stop() {
-        guard isActive else { return }
+        guard isActive, let id = meetingID else { return }
         isActive = false
+        notebook.finishingMeeting(id)
         systemAudio.stop { [weak self] flushed in
-            guard let self else { return }
+            guard let self, self.meetingID == id else { return }
             if let flushed {
-                self.handleSystemChunk(flushed, chunkStartedAt: Date())
+                let startedAt = Date().addingTimeInterval(-Double(flushed.count) / 16000)
+                self.handleSystemChunk(flushed, chunkStartedAt: startedAt, meetingID: id)
             }
-            self.finish()
+            self.systemStopped = true
+            self.finishIfDrained()
         }
     }
 
-    private func finish() {
-        acceptingAppends = false
+    private func completeChunk(meetingID id: UUID) {
+        guard meetingID == id else { return }
+        pendingChunks -= 1
+        finishIfDrained()
+    }
+
+    private func finishIfDrained() {
+        guard !isActive, systemStopped, pendingChunks == 0, let id = meetingID else { return }
         Config.meetingModeActive = false
         if Config.speakerLabelsEnabled, SpeakerDiarizer.shared.isReady {
             SpeakerDiarizer.shared.persistSession()
         }
-        let minutes = max(1, Int(Date().timeIntervalSince(startedAt) / 60))
-        scratchpad.append("— Meeting ended, \(minutes) min —\n\n")
-        generateNotes()
+        meetingID = nil
+        notebook.endMeeting(id)
+        onFinished?()
     }
 
-    private func generateNotes() {
-        guard !transcriptLines.isEmpty else { return }
-        let transcript = transcriptLines.joined(separator: "\n")
-        scratchpad.append("Generating meeting notes…\n\n")
-        MeetingNotesGenerator.generate(transcript: transcript) { [weak self] notes in
-            guard let self else { return }
-            if let notes {
-                self.scratchpad.append(notes + "\n\n")
-            } else {
-                self.scratchpad.append("(meeting notes unavailable - is Ollama running?)\n\n")
-            }
-        }
-    }
-
-    /// One mic chunk finished transcribing — append it labeled "Me", using
-    /// the wall clock captured at chunk start (passed in by the caller).
-    func appendMicChunk(text: String, chunkStartedAt: Date) {
-        guard !text.isEmpty, acceptingAppends else { return }
-        let cleaned = MeetingFormatting.strippingLeadingLabels(text)
-        let line = MeetingFormatting.prefixedLine(at: chunkStartedAt, speaker: "Me", text: cleaned)
-        transcriptLines.append(line)
-        scratchpad.append(line + "\n\n")
-    }
-
-    private func handleSystemChunk(_ samples: [Float], chunkStartedAt: Date) {
-        guard !samples.isEmpty else { return }
+    private func handleSystemChunk(_ samples: [Float], chunkStartedAt: Date, meetingID id: UUID) {
+        guard meetingID == id, !samples.isEmpty else { return }
+        pendingChunks += 1
         let wav = AudioRecorder.wavData(samples: samples, sampleRate: 16000)
         let language = Config.effectiveCaptureLanguage(dictationLanguage: Config.whisperLanguage)
         TranscriptionRouter.transcribe(wav: wav, fieldContext: nil, languageOverride: language) { [weak self] result in
-            guard let self, case .success(let text) = result, !text.isEmpty else {
-                if case .failure(let error) = result {
-                    Log.error("Meeting mode: system-audio transcription failed (\(error.localizedDescription))")
+            DispatchQueue.main.async {
+                guard let self, self.meetingID == id else { return }
+                guard case .success(let text) = result, !text.isEmpty,
+                      !Transcriber.looksLikeHallucination(text) else {
+                    if case .failure(let error) = result {
+                        Log.error("Meeting mode: system-audio transcription failed (\(error.localizedDescription))")
+                        self.notebook.report(message: "A system-audio segment could not be transcribed.", for: id)
+                    }
+                    self.completeChunk(meetingID: id)
+                    return
                 }
-                return
+                self.labelAndAppend(text: text, samples: samples, chunkStartedAt: chunkStartedAt, meetingID: id)
             }
-            if Transcriber.looksLikeHallucination(text) {
-                Log.info("Meeting mode: dropped hallucinated system chunk (\(text.count) chars)")
-                return
-            }
-            self.labelAndAppend(text: text, samples: samples, chunkStartedAt: chunkStartedAt)
         }
     }
 
-    private func labelAndAppend(text: String, samples: [Float], chunkStartedAt: Date) {
+    private func labelAndAppend(text: String, samples: [Float], chunkStartedAt: Date, meetingID id: UUID) {
         guard Config.speakerLabelsEnabled, SpeakerDiarizer.shared.isReady else {
-            append(text: text, speaker: "Them", chunkStartedAt: chunkStartedAt)
+            append(text: text, speaker: "Them", chunkStartedAt: chunkStartedAt, meetingID: id)
+            completeChunk(meetingID: id)
             return
         }
         SpeakerDiarizer.shared.diarize(samples: samples) { [weak self] segments in
-            guard let self else { return }
-            let speakerId = SpeakerDiarizer.dominantSpeaker(segments)
-            let name = speakerId.map { SpeakerDiarizer.shared.name(for: $0) }
-            let label = MeetingFormatting.speakerLabel(
-                isMic: false,
-                speakerLabelsEnabled: true,
-                diarizerReady: true,
-                dominantSpeakerName: name
-            )
-            self.append(text: text, speaker: label, chunkStartedAt: chunkStartedAt)
+            DispatchQueue.main.async {
+                guard let self, self.meetingID == id else { return }
+                let speakerId = SpeakerDiarizer.dominantSpeaker(segments)
+                let name = speakerId.map { SpeakerDiarizer.shared.name(for: $0) }
+                let label = MeetingFormatting.speakerLabel(
+                    isMic: false,
+                    speakerLabelsEnabled: true,
+                    diarizerReady: true,
+                    dominantSpeakerName: name
+                )
+                self.append(text: text, speaker: label, chunkStartedAt: chunkStartedAt, meetingID: id)
+                self.completeChunk(meetingID: id)
+            }
         }
     }
 
-    private func append(text: String, speaker: String, chunkStartedAt: Date) {
-        guard acceptingAppends else {
-            Log.info("Meeting mode: dropped late chunk (\(text.count) chars, meeting already ended)")
-            return
-        }
+    private func append(text: String, speaker: String, chunkStartedAt: Date, meetingID id: UUID) {
+        guard meetingID == id else { return }
         let cleaned = MeetingFormatting.strippingLeadingLabels(text)
-        let line = MeetingFormatting.prefixedLine(at: chunkStartedAt, speaker: speaker, text: cleaned)
-        transcriptLines.append(line)
-        scratchpad.append(line + "\n\n")
+        guard !cleaned.isEmpty else { return }
+        notebook.append(text: cleaned, speaker: speaker, at: chunkStartedAt, to: id)
     }
 }

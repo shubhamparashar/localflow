@@ -70,6 +70,9 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var noiseFloorDb: Float = -70
 
     private(set) var isRunning = false
+    private var isStarting = false
+    private var stopRequested = false
+    private var pendingStop: (([Float]?) -> Void)?
 
     /// Fired on a background queue with an emitted chunk's samples (16 kHz
     /// mono Float32) — never the discarded ones.
@@ -80,13 +83,15 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private static var didWarnPermission = false
 
     func start(completion: @escaping (Bool) -> Void) {
-        guard !isRunning else {
+        guard !isRunning, !isStarting else {
             completion(true)
             return
         }
-        resetChunkState()
+        sampleQueue.sync { resetChunkState() }
+        isStarting = true
+        stopRequested = false
 
-        Task {
+        Task { @MainActor in
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(
                     false,
@@ -94,7 +99,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 )
                 guard let display = content.displays.first else {
                     Log.error("Meeting mode: no shareable display found")
-                    await self.finishStart(false, completion: completion)
+                    self.finishStart(false, completion: completion)
                     return
                 }
                 let filter = SCContentFilter(display: display, excludingWindows: [])
@@ -115,25 +120,38 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 self.stream = newStream
                 self.isRunning = true
                 Log.info("Meeting mode: system audio capture started")
-                await self.finishStart(true, completion: completion)
+                self.finishStart(true, completion: completion)
             } catch {
                 Log.error("Meeting mode: system audio capture failed to start (\(error.localizedDescription))")
                 Self.warnPermissionOnce()
-                await self.finishStart(false, completion: completion)
+                self.finishStart(false, completion: completion)
             }
         }
     }
 
     @MainActor
     private func finishStart(_ ok: Bool, completion: @escaping (Bool) -> Void) {
+        isStarting = false
         completion(ok)
+        if stopRequested, let pendingStop {
+            self.pendingStop = nil
+            stop(completion: pendingStop)
+        }
     }
 
     /// Stops the stream and flushes whatever partial chunk was mid-flight, so
     /// audio recorded right up to the toggle-off isn't silently dropped.
     func stop(completion: @escaping ([Float]?) -> Void) {
-        guard isRunning, let stream else {
-            completion(nil)
+        if isStarting {
+            stopRequested = true
+            pendingStop = completion
+            return
+        }
+        guard let stream else {
+            sampleQueue.async {
+                let flushed = self.finalizeChunk(force: true)
+                DispatchQueue.main.async { completion(flushed) }
+            }
             return
         }
         isRunning = false
@@ -155,8 +173,11 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         Log.error("Meeting mode: system audio stream stopped unexpectedly (\(error.localizedDescription))")
-        isRunning = false
-        self.stream = nil
+        DispatchQueue.main.async {
+            guard self.stream === stream else { return }
+            self.isRunning = false
+            self.stream = nil
+        }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {

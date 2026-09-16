@@ -65,7 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var captureModeActive = false
     private var captureChunkCount = 0
     private var captureEmptyStreak = 0
-    private lazy var meetingSession = MeetingSession(scratchpad: scratchpad)
+    private lazy var meetingNotebook = MeetingNotebookController()
+    private lazy var meetingSession = MeetingSession(notebook: meetingNotebook)
+    private var captureMeetingID: UUID?
     private var meetingModeActive = false
     private var captureChunkStartedAt = Date()
     private var commandSelection: String?
@@ -88,6 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forEventClass: AEEventClass(kInternetEventClass),
             andEventID: AEEventID(kAEGetURL)
         )
+        meetingNotebook.onToggleMeeting = { [weak self] in self?.toggleMeetingMode() }
+        meetingSession.onFinished = { [weak self] in self?.rebuildMenu() }
         setupStatusItem()
         ensurePermissions()
         if Config.speakerLabelsEnabled {
@@ -288,6 +292,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func beginDictation() {
         guard state == .idle || state == .transcribing else { return }
+        guard !meetingSession.isBusy || meetingSession.isActive else {
+            sessionIsCommand = false
+            sessionIsClaudePipe = false
+            return
+        }
         guard !improveInFlight else {
             Log.info("Dictation rejected: improve in flight")
             return
@@ -359,6 +368,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let isCommand = sessionIsCommand
         let isClaudePipe = sessionIsClaudePipe
         let isCapture = sessionIsCapture
+        let meetingID = captureMeetingID
+        let chunkStartedAt = captureChunkStartedAt
+        captureMeetingID = nil
         let mode = isCommand ? "command"
             : (isClaudePipe ? "claudePipe"
                 : (isCapture ? "capture" : (handsFreeArmed ? "handsFree" : "hold")))
@@ -367,6 +379,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionIsClaudePipe = false
         sessionIsCapture = false
         guard let wav else {
+            if let meetingID {
+                meetingSession.completeMicChunk(text: nil, chunkStartedAt: chunkStartedAt, meetingID: meetingID)
+            }
             state = .idle
             maybeRestartCapture(wasCapture: isCapture, producedText: false)
             return
@@ -387,7 +402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.transcribeAndRoute(wav, isCommand: true, isClaudePipe: false, isCapture: false, mode: mode)
             }
         } else {
-            transcribeAndRoute(wav, isCommand: false, isClaudePipe: isClaudePipe, isCapture: isCapture, mode: mode)
+            transcribeAndRoute(wav, isCommand: false, isClaudePipe: isClaudePipe, isCapture: isCapture, mode: mode, meetingID: meetingID, chunkStartedAt: chunkStartedAt)
         }
     }
 
@@ -396,7 +411,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isCommand: Bool,
         isClaudePipe: Bool,
         isCapture: Bool = false,
-        mode: String
+        mode: String,
+        meetingID: UUID? = nil,
+        chunkStartedAt: Date = Date()
     ) {
         let sttStarted = Date()
         let profile = sessionProfile
@@ -408,6 +425,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             : nil
         TranscriptionRouter.transcribe(wav: wav, fieldContext: fieldContext, languageOverride: languageOverride) { [weak self] result in
             guard let self else { return }
+            var meetingText: String?
+            defer {
+                if let meetingID {
+                    self.meetingSession.completeMicChunk(text: meetingText, chunkStartedAt: chunkStartedAt, meetingID: meetingID)
+                }
+            }
             let sttSeconds = Date().timeIntervalSince(sttStarted)
             self.state = .idle
             switch result {
@@ -425,7 +448,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .capture:
                     self.captureChunkCount += 1
                     Log.info("Capture mode: chunk \(self.captureChunkCount) (\(text.count) chars)")
-                    self.appendCaptureChunk(text: text, wav: wav)
+                    if meetingID != nil {
+                        meetingText = text
+                    } else {
+                        self.appendCaptureChunk(text: text, wav: wav)
+                    }
                     self.maybeRestartCapture(wasCapture: true, producedText: true)
                 case .normal:
                     self.lastRawTranscript = text
@@ -492,6 +519,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             case .failure(let error):
+                if let meetingID {
+                    self.meetingNotebook.report(message: "A microphone segment could not be transcribed.", for: meetingID)
+                }
                 Log.error("Transcription failed, take dropped: \(error.localizedDescription)")
                 self.hud.show(.warning("Transcription failed — take lost"))
                 self.maybeRestartCapture(wasCapture: isCapture, producedText: false)
@@ -504,11 +534,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ready. Chunk-level labeling only — the whole chunk gets one label
     /// (its dominant speaker by spoken duration), not per-word attribution.
     private func appendCaptureChunk(text: String, wav: Data) {
-        if meetingModeActive {
-            // The mic is always the user — no diarization needed for this side.
-            meetingSession.appendMicChunk(text: text, chunkStartedAt: captureChunkStartedAt)
-            return
-        }
         // Mic-only capture is always the user's own voice: diarizing it only
         // ever mislabels chunks with stale profile names. Speaker labels stay
         // a Meeting Mode (system-audio) concern.
@@ -549,15 +574,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionIsCapture = true
         beginDictation()
         if state == .recording {
+            captureMeetingID = meetingSession.beginMicChunk()
             handsFreeArmed = true
             recorder.enableAutoStop()
         } else {
             sessionIsCapture = false
+            if meetingSession.isActive { meetingSession.microphoneUnavailable() }
         }
     }
 
     private func setCaptureMode(_ on: Bool) {
-        guard !meetingModeActive else { return }
+        guard !meetingSession.isBusy else { return }
         guard captureModeActive != on else { return }
         captureModeActive = on
         if on {
@@ -583,14 +610,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    // MARK: - Meeting Mode (mic + system audio notes into the Scratchpad)
-
-    /// Meeting Mode reuses the Capture Mode mic loop verbatim (chunk timing,
-    /// hands-free VAD, the 3-empty-takes stop) and layers a
-    /// `MeetingSession` on top for the system-audio half and the
-    /// meeting-specific Scratchpad framing.
+    // MARK: - Meeting Mode
     private func startMeetingMode() {
-        guard !meetingModeActive, !captureModeActive else { return }
+        guard !meetingSession.isBusy, !captureModeActive, state == .idle else { return }
         if Config.speakerLabelsEnabled, !SpeakerDiarizer.shared.isReady {
             SpeakerDiarizer.shared.prepare { ready in
                 Log.info("Diarizer engine ready: \(ready)")
@@ -737,6 +759,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 startHandsFreeDictation()
             }
+        case "meetings":
+            meetingNotebook.show()
         case "paste-last":
             injector.pasteLastTranscript()
         case "snap":
@@ -945,6 +969,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         scratchpadItem.target = self
         menu.addItem(scratchpadItem)
+
+        let notebookItem = NSMenuItem(title: "Meeting Notebook…", action: #selector(showMeetingNotebook), keyEquivalent: "")
+        notebookItem.target = self
+        menu.addItem(notebookItem)
 
         if Config.claudePipeEnabled {
             let dictateToClaude = NSMenuItem(
@@ -1286,6 +1314,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showHistory() {
         HistoryView.present()
+    }
+
+    @objc private func showMeetingNotebook() {
+        meetingNotebook.show()
     }
 
     @objc private func showScratchpad() {
