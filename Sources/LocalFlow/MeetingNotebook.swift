@@ -175,7 +175,11 @@ final class MeetingNotebookController: NSObject, NSTextViewDelegate, NSTextField
         generating.insert(id)
         messages[id] = nil
         render()
-        MeetingNotesGenerator.generate(transcript: snapshot.transcript, rawNotes: snapshot.rawNotes) { [weak self] notes in
+        let input = snapshot.notesInput
+        if input.hasOverlappingChannels {
+            report(message: "Repeated speech appears in both audio channels; speaker ownership needs review.", for: id)
+        }
+        MeetingNotesGenerator.generate(transcript: input.transcript, rawNotes: snapshot.rawNotes) { [weak self] notes in
             guard let self, var current = self.documents[id] else { return }
             self.generating.remove(id)
             if current.rawNotes != snapshot.rawNotes || current.entries != snapshot.entries {
@@ -188,7 +192,7 @@ final class MeetingNotebookController: NSObject, NSTextViewDelegate, NSTextField
                     self.tabs.selectedSegment = 1
                 }
             } else {
-                self.messages[id] = "Enhancement unavailable. Check Ollama and retry. Your notes and transcript are preserved."
+                self.messages[id] = "Could not generate a quoted draft. Check Ollama and the \(Config.summaryModel) model, then retry. Your notes and transcript are preserved."
             }
             self.render()
         }

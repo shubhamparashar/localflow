@@ -22,7 +22,7 @@ enum MeetingAudioChunker {
     /// How much trailing silence after speech ends a chunk.
     static let trailingSilenceThreshold: TimeInterval = 1.5
     /// Hard cap so a chunk can't grow unbounded through a long monologue.
-    static let forceEmitCap: TimeInterval = 600
+    static let forceEmitCap: TimeInterval = 30
     /// Chunks with less spoken content than this are noise, not a note.
     static let minSpeechForEmit: TimeInterval = 0.5
 

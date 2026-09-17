@@ -12,6 +12,56 @@ enum PartialCaptionScheduler {
     }
 }
 
+/// Splits continuous microphone samples without stopping the audio engine.
+struct MeetingMicrophoneBuffer {
+    struct Chunk {
+        let samples: [Float]
+        let startedAt: Date
+    }
+
+    static let sampleRate = 16_000
+    static let maximumSamples = Int(MeetingAudioChunker.forceEmitCap) * sampleRate
+    private(set) var samples: [Float] = []
+    private(set) var startedAt: Date?
+    private var speechSamples = 0
+    private var trailingSilenceSamples = 0
+    var hasSpeech: Bool { Double(speechSamples) / Double(Self.sampleRate) >= MeetingAudioChunker.minSpeechForEmit }
+
+    mutating func append(_ incoming: [Float], at date: Date, isSpeech: Bool) -> [Chunk] {
+        guard !incoming.isEmpty else { return [] }
+        if startedAt == nil { startedAt = date }
+        var chunks: [Chunk] = []
+        var offset = 0
+        while offset < incoming.count {
+            let count = min(Self.maximumSamples - samples.count, incoming.count - offset)
+            samples.append(contentsOf: incoming[offset..<(offset + count)])
+            if isSpeech {
+                speechSamples += count
+                trailingSilenceSamples = 0
+            } else {
+                trailingSilenceSamples += count
+            }
+            offset += count
+            let duration = Double(samples.count) / Double(Self.sampleRate)
+            let decision = MeetingAudioChunker.decide(
+                isSpeechFrame: isSpeech,
+                elapsedSpeechSeconds: Double(speechSamples) / Double(Self.sampleRate),
+                elapsedTrailingSilenceSeconds: Double(trailingSilenceSamples) / Double(Self.sampleRate),
+                totalElapsedSeconds: duration
+            )
+            if decision != .continueRecording {
+                let start = startedAt ?? date
+                if decision == .emit { chunks.append(Chunk(samples: samples, startedAt: start)) }
+                samples.removeAll(keepingCapacity: true)
+                speechSamples = 0
+                trailingSilenceSamples = 0
+                startedAt = start.addingTimeInterval(duration)
+            }
+        }
+        return chunks
+    }
+}
+
 /// Captures microphone audio and accumulates it as 16 kHz mono Float32
 /// samples, the input format whisper.cpp expects.
 // Portions adapted from FluidVoice (https://github.com/altic-dev/FluidVoice), commit 1698a31, Apache License 2.0.
@@ -22,6 +72,12 @@ final class AudioRecorder {
     private var samples: [Float] = []
     private let sampleQueue = DispatchQueue(label: "localflow.audio.samples")
     private(set) var isRecording = false
+    private var meetingMode = false
+    private var meetingBuffer = MeetingMicrophoneBuffer()
+    private(set) var lastChunkStartedAt = Date.distantPast
+
+    /// Continuous meeting windows, delivered on main before the final stop callback.
+    var onMeetingChunk: (([Float], Date) -> Void)?
 
     /// Fired once per recording (on the main queue) when hands-free
     /// endpointing decides the utterance is over.
@@ -112,9 +168,13 @@ final class AudioRecorder {
         }
     }
 
-    func start() throws {
+    func start(meeting: Bool = false) throws {
         guard !isRecording else { return }
-        sampleQueue.sync { samples.removeAll() }
+        meetingMode = meeting
+        sampleQueue.sync {
+            samples.removeAll()
+            meetingBuffer = MeetingMicrophoneBuffer()
+        }
         autoStopEnabled = false
         autoStopFired = false
         speechDetected = false
@@ -180,8 +240,11 @@ final class AudioRecorder {
         // surface as a throw instead of crashing the process.
         if let exception = LFCatchException({
             input.removeTap(onBus: 0)
-            input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-                self?.append(buffer)
+            input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, time in
+                let now = mach_absolute_time()
+                let delay = time.isHostTimeValid && now >= time.hostTime
+                    ? AVAudioTime.seconds(forHostTime: now - time.hostTime) : 0
+                self?.append(buffer, at: Date().addingTimeInterval(-delay))
             }
             self.engine.prepare()
         }) {
@@ -214,7 +277,7 @@ final class AudioRecorder {
     private static let maxFormatAttempts = 5
 
     /// Stops capture and returns the utterance as 16-bit PCM WAV data.
-    /// Returns nil when the recording is too short to transcribe (<0.3 s).
+    /// Ordinary takes shorter than 0.3 s and meeting tails without speech are dropped.
     func stop() -> Data? {
         guard isRecording else { return nil }
         if let exception = LFCatchException({
@@ -226,10 +289,19 @@ final class AudioRecorder {
         isRecording = false
 
         var captured: [Float] = []
-        sampleQueue.sync { captured = self.samples }
+        sampleQueue.sync {
+            if meetingMode {
+                captured = meetingBuffer.hasSpeech ? meetingBuffer.samples : []
+                lastChunkStartedAt = meetingBuffer.startedAt ?? recordingStartedAt
+                meetingBuffer = MeetingMicrophoneBuffer()
+            } else {
+                captured = self.samples
+                lastChunkStartedAt = recordingStartedAt
+            }
+        }
 
         lastDurationSec = Double(captured.count) / Self.targetSampleRate
-        let minSamples = Int(Self.targetSampleRate * 0.3)
+        let minSamples = meetingMode ? 1 : Int(Self.targetSampleRate * 0.3)
         guard captured.count >= minSamples else {
             Log.info("Recording too short (\(captured.count) samples), discarding")
             return nil
@@ -250,6 +322,12 @@ final class AudioRecorder {
             completion(nil)
             return
         }
+        if meetingMode {
+            let wav = stop()
+            // sampleQueue enqueues full windows before this final partial window.
+            DispatchQueue.main.async { completion(wav) }
+            return
+        }
         let started = Date()
         var timer: Timer?
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -268,7 +346,7 @@ final class AudioRecorder {
         }
     }
 
-    private func append(_ buffer: AVAudioPCMBuffer) {
+    private func append(_ buffer: AVAudioPCMBuffer, at date: Date) {
         guard let converter else { return }
         let ratio = Self.targetSampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
@@ -295,10 +373,19 @@ final class AudioRecorder {
             for i in chunk.indices { chunk[i] *= gain }
         }
         sampleQueue.async {
-            self.samples.append(contentsOf: chunk)
-            self.checkPartialTick(addedSamples: chunk.count)
+            if self.meetingMode {
+                let isSpeech = self.evaluateEndpoint(chunk)
+                for window in self.meetingBuffer.append(chunk, at: date, isSpeech: isSpeech) {
+                    let deliver = self.onMeetingChunk
+                    Log.info("Meeting microphone window: \(window.samples.count) samples")
+                    DispatchQueue.main.async { deliver?(window.samples, window.startedAt) }
+                }
+            } else {
+                self.samples.append(contentsOf: chunk)
+                self.checkPartialTick(addedSamples: chunk.count)
+                _ = self.evaluateEndpoint(chunk)
+            }
         }
-        evaluateEndpoint(chunk)
     }
 
     /// Runs on `sampleQueue` (background) so the snapshot copy never touches
@@ -324,11 +411,12 @@ final class AudioRecorder {
     /// Arms hands-free endpointing: the recording stops itself once speech
     /// has been heard and ~0.9 s of trailing silence follows.
     func enableAutoStop() {
+        guard !meetingMode else { return }
         armedAt = Date()
         autoStopEnabled = true
     }
 
-    private func evaluateEndpoint(_ chunk: [Float]) {
+    private func evaluateEndpoint(_ chunk: [Float]) -> Bool {
         let rms = sqrt(chunk.reduce(Float(0)) { $0 + $1 * $1 } / Float(chunk.count))
         let levelDb = 20 * log10(max(rms, 1e-7))
 
@@ -342,7 +430,8 @@ final class AudioRecorder {
 
         let now = Date()
         let speechThreshold = max(noiseFloorDb + vadOffsetDb, vadFloorDb)
-        if levelDb > speechThreshold {
+        let isSpeech = levelDb > speechThreshold
+        if isSpeech {
             speechDetected = true
             lastSpeechAt = now
         }
@@ -350,7 +439,7 @@ final class AudioRecorder {
             DispatchQueue.main.async { onLevel(levelDb) }
         }
 
-        guard autoStopEnabled, !autoStopFired else { return }
+        guard autoStopEnabled, !autoStopFired else { return isSpeech }
         let speakingFor = now.timeIntervalSince(recordingStartedAt)
         let shouldStop =
             (speechDetected && now.timeIntervalSince(lastSpeechAt) > Self.endpointSilenceWindow(speakingFor: speakingFor)) ||
@@ -361,6 +450,7 @@ final class AudioRecorder {
             Log.info("VAD auto-stop (speech=\(speechDetected), floor=\(String(format: "%.0f", noiseFloorDb))dB)")
             DispatchQueue.main.async { self.onAutoStop?() }
         }
+        return isSpeech
     }
 
     /// Encodes 16 kHz mono Float32 samples as 16-bit PCM WAV. Shared with

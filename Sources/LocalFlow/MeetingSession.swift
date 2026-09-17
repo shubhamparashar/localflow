@@ -11,9 +11,8 @@ enum MeetingFormatting {
         return "[\(time)] **\(speaker):** \(text)"
     }
 
-    /// Which label a chunk gets: the mic is always the user; a system-audio
-    /// chunk gets the diarized dominant speaker's name when labeling is on
-    /// and the diarizer is ready, otherwise the generic "Them".
+    /// "Me" identifies the microphone channel, which can also contain speaker
+    /// playback. System chunks use the diarized dominant speaker when available.
     /// Transcripts occasionally arrive already carrying a bold label (echo
     /// of our own formatting picked up from screen-shared notes, or model
     /// artifacts) — strip any leading "**X:**" tokens so lines never render
@@ -93,10 +92,30 @@ final class MeetingSession {
 
     func completeMicChunk(text: String?, chunkStartedAt: Date, meetingID id: UUID) {
         guard meetingID == id else { return }
-        if let text, !text.isEmpty {
+        if let text, !text.isEmpty, !Transcriber.looksLikeHallucination(text) {
             append(text: text, speaker: "Me", chunkStartedAt: chunkStartedAt, meetingID: id)
         }
         completeChunk(meetingID: id)
+    }
+
+    func transcribeMicChunk(_ samples: [Float], chunkStartedAt: Date, meetingID id: UUID) {
+        guard meetingID == id, !samples.isEmpty else { return }
+        pendingChunks += 1
+        let wav = AudioRecorder.wavData(samples: samples, sampleRate: 16000)
+        let language = Config.effectiveCaptureLanguage(dictationLanguage: Config.whisperLanguage)
+        TranscriptionRouter.transcribe(wav: wav, fieldContext: nil, languageOverride: language) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.meetingID == id else { return }
+                switch result {
+                case .success(let text):
+                    self.completeMicChunk(text: text, chunkStartedAt: chunkStartedAt, meetingID: id)
+                case .failure(let error):
+                    Log.error("Meeting mode: microphone transcription failed (\(error.localizedDescription))")
+                    self.notebook.report(message: "A microphone segment could not be transcribed.", for: id)
+                    self.completeMicChunk(text: nil, chunkStartedAt: chunkStartedAt, meetingID: id)
+                }
+            }
+        }
     }
 
     func stop() {

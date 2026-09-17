@@ -41,12 +41,12 @@ struct MeetingModeTests {
     }
 
     @Test func chunkerDiscardsSilenceOnlyRunAtForcedCap() {
-        // No speech ever heard, but the 600s cap forces a boundary decision.
+        // Silent streams also advance through bounded windows.
         let decision = MeetingAudioChunker.decide(
             isSpeechFrame: false,
             elapsedSpeechSeconds: 0,
-            elapsedTrailingSilenceSeconds: 600,
-            totalElapsedSeconds: 600
+            elapsedTrailingSilenceSeconds: 30,
+            totalElapsedSeconds: 30
         )
         #expect(decision == .discard)
     }
@@ -54,9 +54,9 @@ struct MeetingModeTests {
     @Test func chunkerForceEmitsAtCapWithEnoughSpeech() {
         let decision = MeetingAudioChunker.decide(
             isSpeechFrame: true,
-            elapsedSpeechSeconds: 450,
+            elapsedSpeechSeconds: 30,
             elapsedTrailingSilenceSeconds: 0,
-            totalElapsedSeconds: 600
+            totalElapsedSeconds: 30
         )
         #expect(decision == .emit)
     }
@@ -173,5 +173,66 @@ struct MeetingModeTests {
         #expect(MeetingFormatting.strippingLeadingLabels("**Them:** So, we're still working.") == "So, we're still working.")
         #expect(MeetingFormatting.strippingLeadingLabels("**Me:** **Them:** Huh.") == "Huh.")
         #expect(MeetingFormatting.strippingLeadingLabels("No labels here.") == "No labels here.")
+    }
+}
+
+@Suite struct MeetingMicrophoneBufferTests {
+    @Test func continuousSpeechRollsOverWithoutDroppingOrDuplicatingSamples() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let input = (0..<(65 * 16_000)).map { Float($0) }
+        var buffer = MeetingMicrophoneBuffer()
+        var windows: [MeetingMicrophoneBuffer.Chunk] = []
+        for offset in stride(from: 0, to: input.count, by: 4096) {
+            let end = min(offset + 4096, input.count)
+            windows += buffer.append(Array(input[offset..<end]), at: start.addingTimeInterval(Double(offset) / 16_000), isSpeech: true)
+        }
+        #expect(windows.count == 2)
+        #expect(windows.map { $0.samples.count } == [480_000, 480_000])
+        #expect(windows.map { $0.startedAt } == [start, start.addingTimeInterval(30)])
+        #expect(buffer.startedAt == start.addingTimeInterval(60))
+        #expect(buffer.samples.count == 80_000)
+        #expect(windows.flatMap { $0.samples } + buffer.samples == input)
+    }
+
+    @Test func silenceIsSkippedWithoutResettingTheSampleClock() {
+        var buffer = MeetingMicrophoneBuffer()
+        let start = Date(timeIntervalSince1970: 1_000)
+        #expect(buffer.append([Float](repeating: 0, count: 480_000), at: start, isSpeech: false).isEmpty)
+        #expect(buffer.startedAt == start.addingTimeInterval(30))
+        #expect(!buffer.hasSpeech)
+        #expect(buffer.append([Float](repeating: 0.1, count: 4_000), at: start, isSpeech: true).isEmpty)
+        #expect(!buffer.hasSpeech)
+        #expect(buffer.append([Float](repeating: 0.1, count: 4_000), at: start, isSpeech: true).isEmpty)
+        #expect(buffer.hasSpeech)
+        #expect(buffer.samples.count == 8_000)
+    }
+
+    @Test func speechPauseEmitsWithoutLosingTheNextUtterance() {
+        var buffer = MeetingMicrophoneBuffer()
+        let start = Date(timeIntervalSince1970: 1_000)
+        let firstSpeech = [Float](repeating: 0.2, count: 16_000)
+        let pause = [Float](repeating: 0, count: 24_000)
+        let nextSpeech = [Float](repeating: 0.3, count: 16_000)
+        #expect(buffer.append(firstSpeech, at: start, isSpeech: true).isEmpty)
+        let windows = buffer.append(pause, at: start.addingTimeInterval(1), isSpeech: false)
+        #expect(windows.count == 1)
+        let firstWindowPreserved = windows.first?.samples == firstSpeech + pause
+        #expect(firstWindowPreserved)
+        #expect(windows.first?.startedAt == start)
+        #expect(buffer.startedAt == start.addingTimeInterval(2.5))
+        #expect(buffer.append(nextSpeech, at: start.addingTimeInterval(2.5), isSpeech: true).isEmpty)
+        #expect(buffer.hasSpeech)
+        let allSamplesPreserved = windows.flatMap { $0.samples } + buffer.samples == firstSpeech + pause + nextSpeech
+        #expect(allSamplesPreserved)
+    }
+
+    @Test func exactBoundaryLeavesNoDuplicateFinalWindow() {
+        var buffer = MeetingMicrophoneBuffer()
+        let start = Date(timeIntervalSince1970: 1_000)
+        let windows = buffer.append([Float](repeating: 0.2, count: 480_000), at: start, isSpeech: true)
+        #expect(windows.count == 1)
+        #expect(buffer.samples.isEmpty)
+        #expect(buffer.startedAt == start.addingTimeInterval(30))
+        #expect(buffer.append([], at: start, isSpeech: false).isEmpty)
     }
 }

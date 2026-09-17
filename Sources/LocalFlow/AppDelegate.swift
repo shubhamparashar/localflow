@@ -312,7 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         partialCaptionRunner.cancel()
         OllamaCleaner.warmUp()
         do {
-            try recorder.start()
+            try recorder.start(meeting: sessionIsCapture && captureMeetingID != nil)
             state = .recording
             if Config.playStartSound {
                 NSSound(named: "Tink")?.play()
@@ -369,7 +369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let isClaudePipe = sessionIsClaudePipe
         let isCapture = sessionIsCapture
         let meetingID = captureMeetingID
-        let chunkStartedAt = captureChunkStartedAt
+        let chunkStartedAt = captureMeetingID == nil ? captureChunkStartedAt : recorder.lastChunkStartedAt
         captureMeetingID = nil
         let mode = isCommand ? "command"
             : (isClaudePipe ? "claudePipe"
@@ -417,7 +417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) {
         let sttStarted = Date()
         let profile = sessionProfile
-        let fieldContext = sessionFieldContext
+        let fieldContext = meetingID == nil ? sessionFieldContext : nil
         // Capture chunks route with their own language setting — a meeting's
         // language rarely matches the configured dictation language.
         let languageOverride: String? = isCapture
@@ -572,13 +572,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionIsCommand = false
         sessionIsClaudePipe = false
         sessionIsCapture = true
+        let meetingID = meetingSession.beginMicChunk()
+        captureMeetingID = meetingID
+        recorder.onMeetingChunk = { [weak self] samples, startedAt in
+            guard let self, let meetingID else { return }
+            self.captureChunkCount += 1
+            self.meetingSession.transcribeMicChunk(samples, chunkStartedAt: startedAt, meetingID: meetingID)
+        }
         beginDictation()
         if state == .recording {
-            captureMeetingID = meetingSession.beginMicChunk()
-            handsFreeArmed = true
-            recorder.enableAutoStop()
+            if meetingID == nil {
+                handsFreeArmed = true
+                recorder.enableAutoStop()
+            }
         } else {
             sessionIsCapture = false
+            if let meetingID {
+                meetingSession.completeMicChunk(text: nil, chunkStartedAt: captureChunkStartedAt, meetingID: meetingID)
+                captureMeetingID = nil
+            }
             if meetingSession.isActive { meetingSession.microphoneUnavailable() }
         }
     }

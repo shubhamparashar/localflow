@@ -21,6 +21,48 @@ struct MeetingDocument: Codable, Identifiable, Equatable {
             MeetingFormatting.prefixedLine(at: $0.at, speaker: $0.speaker, text: $0.text)
         }.joined(separator: "\n\n")
     }
+
+    /// Repeated speech across mic/system channels cannot establish an owner.
+    /// Keep the original transcript intact for inspection and correction.
+    var notesTranscript: String { notesInput.transcript }
+
+    var notesInput: (transcript: String, hasOverlappingChannels: Bool) {
+        let ordered = entries.sorted { $0.at < $1.at }
+        func words(_ text: String) -> [String] {
+            let letters = CharacterSet.alphanumerics.union(.nonBaseCharacters)
+            return text.lowercased().components(separatedBy: letters.inverted).filter { !$0.isEmpty }
+        }
+        var spans: [String: [Int]] = [:]
+        var uncertain: Set<Int> = []
+        for (index, entry) in ordered.enumerated() {
+            let tokens = words(entry.text)
+            guard tokens.count >= 12 else { continue }
+            for offset in 0...(tokens.count - 12) {
+                let key = tokens[offset..<(offset + 12)].joined(separator: " ")
+                for previous in spans[key] ?? [] where previous != index {
+                    let other = ordered[previous]
+                    if (entry.speaker == "Me") != (other.speaker == "Me"),
+                       entry.at.timeIntervalSince(other.at) <= 600 {
+                        uncertain.formUnion([previous, index])
+                    }
+                }
+                if spans[key]?.last != index { spans[key, default: []].append(index) }
+            }
+        }
+        let text = ordered.enumerated().map { index, entry in
+            var seen: Set<String> = []
+            var sentences: [String] = []
+            entry.text.enumerateSubstrings(in: entry.text.startIndex..<entry.text.endIndex, options: .bySentences) { sentence, _, _, _ in
+                guard let sentence else { return }
+                let tokens = words(sentence)
+                if tokens.count >= 6, !seen.insert(tokens.joined(separator: " ")).inserted { return }
+                sentences.append(sentence.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            let speaker = uncertain.contains(index) ? "Unknown speaker (overlapping channels)" : entry.speaker
+            return MeetingFormatting.prefixedLine(at: entry.at, speaker: speaker, text: sentences.joined(separator: " "))
+        }.joined(separator: "\n\n")
+        return (text, !uncertain.isEmpty)
+    }
 }
 
 final class MeetingStore {

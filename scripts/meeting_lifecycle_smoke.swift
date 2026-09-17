@@ -101,6 +101,23 @@ final class SpeakerDiarizer {
         precondition(session.isBusy)
         session.completeMicChunk(text: nil, chunkStartedAt: Date(), meetingID: silentMic)
         precondition(!session.isBusy && notebook.ended.count == 4)
-        print("Meeting lifecycle smoke passed: final mic/system drain, failure release, diarization drain, restart guard, silent mic release")
+
+        session.start()
+        let continuousMic = session.beginMicChunk()!
+        session.transcribeMicChunk([1, 1], chunkStartedAt: Date(), meetingID: continuousMic)
+        session.transcribeMicChunk([1, 1], chunkStartedAt: Date(), meetingID: continuousMic)
+        session.stop()
+        SystemAudioRecorder.last.finishStop(nil)
+        session.completeMicChunk(text: "tail", chunkStartedAt: Date(), meetingID: continuousMic)
+        precondition(session.isBusy, "Stopping must wait for all continuous microphone chunks")
+        TranscriptionRouter.finish(.success("first continuous chunk"))
+        pump()
+        precondition(session.isBusy)
+        TranscriptionRouter.finish(.failure(NSError(domain: "smoke", code: 2)))
+        pump()
+        precondition(!session.isBusy && notebook.ended.count == 5)
+        precondition(notebook.lines.contains("Me: first continuous chunk"))
+        precondition(notebook.reports.last == "A microphone segment could not be transcribed.")
+        print("Meeting lifecycle smoke passed: final mic/system drain, continuous mic drain, failure release, diarization drain, restart guard, silent mic release")
     }
 }
