@@ -54,7 +54,10 @@ local Ollama model. Save/reopen, typing, tab isolation, and generation were insp
 in the native AppKit UI for the notebook milestone. The current production notebook
 controller was also exercised against the real transcript in an isolated store:
 end-meeting generation, overlap warning, save/reopen, and preservation of all 56 raw
-entries passed. The final-build UI check is pending while the Mac is locked.
+entries passed. After restart, the final native UI check passed: the reviewed
+meeting reopened with all 56 segments, a separate synthetic note saved and enhanced
+through the UI, and the generated draft was persisted. The synthetic test still
+misclassified a requested action as Summary; semantic grouping remains unresolved.
 The final suite has 190 passing tests. The capture drain also has a runnable asynchronous smoke
 check. A native 32-second microphone check verified pause-triggered emission while
 recording continued, contiguous timestamps, and the final partial window with no
